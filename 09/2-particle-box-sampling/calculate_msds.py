@@ -44,6 +44,16 @@ def masked_fused_msd_kernel(indices, get_frame, system_id, system_size, mask):
     angular_msd = np.bincount(system_id, weights=dtheta ** 2) / system_size
     return np.column_stack([msd, angular_msd])
 
+@requires_fields("angle")
+def masked_capped_msad_kernel(indices, get_frame, system_id, system_size, angular_period, mask):
+    t0, t1 = indices
+    theta0 = get_frame(t0)['angle']
+    theta1 = get_frame(t1)['angle']
+    dtheta = (theta1 - theta0) * mask
+    dtheta[np.abs(dtheta) > angular_period] = angular_period[np.abs(dtheta) > angular_period]
+    angular_msd = np.bincount(system_id, weights=dtheta ** 2) / system_size
+    return angular_msd
+
 @requires_fields("pos", "angle")
 def fused_generalized_msd_kernel(indices, get_frame, system_id, system_size, angular_period, box_size):
     t0, t1 = indices
@@ -84,12 +94,17 @@ if __name__ == "__main__":
             try:
                 data = load(data_path, location=['init', 'final'], load_trajectory=True, load_full=False)
                 msd_path = data_path + '_msd.npz'
-                if os.path.exists(msd_path):
-                    continue
-                bins = LagBinsPseudoLog.from_source(data.trajectory)
-                res = run_binned(masked_fused_msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'mask': data.moment_inertia > 0}, show_progress=True, n_workers=10)
-                _, ids = np.unique(data.delta_phi, return_inverse=True)
-                np.savez(msd_path, msd=res.mean, t=bins.values(), ids=ids)
+                if not os.path.exists(msd_path):
+                    bins = LagBinsPseudoLog.from_source(data.trajectory)
+                    res = run_binned(masked_fused_msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'mask': data.moment_inertia > 0}, show_progress=True, n_workers=10)
+                    _, ids = np.unique(data.delta_phi, return_inverse=True)
+                    np.savez(msd_path, msd=res.mean, t=bins.values(), ids=ids)
+                capped_msad_path = data_path + '_capped_msad.npz'
+                if not os.path.exists(capped_msad_path):
+                    bins = LagBinsPseudoLog.from_source(data.trajectory)
+                    res = run_binned(masked_capped_msad_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'angular_period': data.angular_period, 'mask': data.moment_inertia > 0}, show_progress=True, n_workers=10)
+                    _, ids = np.unique(data.delta_phi, return_inverse=True)
+                    np.savez(capped_msad_path, msd=res.mean, t=bins.values(), ids=ids)
             except Exception as e:
                 print(e)
                 print(data_path)
