@@ -1,12 +1,5 @@
 """
-Simple investigation of the diffusion of a 2-particle system in a walled boundary.
-The 2-particle system is composed of a disk and a bumpy particle (possibly a disk if desired) with a variable number of vertices and friction coefficient.
-First, the maximum packing fraction is estimated by jamming n_jam_duplicates of the system from random initial positions within the box.
-Once the maximum packing fraction (phi_j) is estimated, max_n_dynamics_duplicates of the system are create with random initial positions corresponding -
-to packing fractions from phi_j to phi_j - max_phi_offset.  Each system is then equilibrated to a 0-overlap state and the velocities are set to the -
-desired temperature.  Finally, NVE dynamics are run for n_steps steps.
-The idea is to determine the translational and rotational diffusion coefficients for the bumpy (rotational) particles and their relationship to nearby -
-free volume.
+Does the same thing as run.py, but with two disks.
 """
 
 
@@ -251,146 +244,141 @@ def load_state_h5(path):
     return out
 
 if __name__ == "__main__":
-    mu_effs = [0.01, 0.05, 0.1, 0.5]
+    data_root = f"/home/mmccraw/dev/data/09-09-25/disk"
+    old_data_root = f"/home/mmccraw/dev/data/09-09-25/disk"
+    script_root = "/home/mmccraw/dev/dpmd/build/"
 
-    for mu_eff in mu_effs:
+    if not os.path.exists(data_root):
+        os.makedirs(data_root)
 
-        data_root = f"/home/mmccraw/dev/data/09-09-25/bumpy-final/{mu_eff}"
-        old_data_root = f"/home/mmccraw/dev/data/09-09-25/bumpy/{mu_eff}"
-        script_root = "/home/mmccraw/dev/dpmd/build/"
+    jam_data_path = os.path.join(old_data_root, "jam")
+    offset_data_path = os.path.join(data_root, "offset")
+    dynamics_data_path = os.path.join(data_root, "dynamics")
+    box_sample_data_path = os.path.join(data_root, "box-sample")
 
-        if not os.path.exists(data_root):
-            os.makedirs(data_root)
+    n_jam_duplicates = 1000
 
-        jam_data_path = os.path.join(old_data_root, "jam")
-        offset_data_path = os.path.join(data_root, "offset")
-        dynamics_data_path = os.path.join(data_root, "dynamics")
-        box_sample_data_path = os.path.join(data_root, "box-sample")
+    n_phi_steps = 50
+    min_phi_offset = 1e-3
+    max_phi_offset = 4e-1
 
-        n_jam_duplicates = 1000
+    max_n_dynamics_duplicates = 1000
 
-        n_phi_steps = 50
-        min_phi_offset = 1e-3
-        max_phi_offset = 4e-1
+    temperatures = [1e-5, 1e-6, 1e-7]
+    n_steps = 1e7
 
-        max_n_dynamics_duplicates = 1000
+    n_box_samples = 1e4
+    n_samples_target = 1e3
+    max_n_iterations = 100
+    max_n_box_sample_duplicates = 10000
 
-        temperatures = [1e-5, 1e-6, 1e-7]
-        n_steps = 1e7
+    n_vertices = 1
+    initial_packing_fraction = 0.2
+    rng_seed = 0
 
-        n_box_samples = 1e4
-        n_samples_target = 1e3
-        max_n_iterations = 100
-        max_n_box_sample_duplicates = 10000
+    rb = create_2_particle_bumpy_disk_system(n_vertices, 0.0, initial_packing_fraction)
+    rb.set_neighbor_method(NeighborMethod.Naive)
 
-        n_vertices = 3
-        initial_packing_fraction = 0.2
-        rng_seed = 0
+    # place n_jam_duplicates of the system randomly within the box, and jam them
+    jam_data = join_systems([rb for _ in range(n_jam_duplicates)])
+    jam_data.set_positions(1, rng_seed)  # set random positions
+    jam_data.set_vertices_on_particles_as_disk()  # update the vertex positions  # may not need this anymore
+    jam_data.save(jam_data_path, locations=["init"], save_trajectory=False)
+    subprocess.run([
+        os.path.join(script_root, "jam_rigid_bumpy_wall_final"),
+        jam_data_path,
+        jam_data_path,
+    ], check=True)
+    jam_data = load(jam_data_path, location=["final", "init"])
 
-        rb = create_2_particle_bumpy_disk_system(n_vertices, mu_eff, initial_packing_fraction)
-        rb.set_neighbor_method(NeighborMethod.Naive)
+    # find the unique phi_j values and pick the highest one
+    pe_tol = 1e-15
+    pe_mask = jam_data.final.pe_total / jam_data.system_size < pe_tol
+    phi_j = np.max(jam_data.final.packing_fraction[pe_mask])
+    if phi_j - max_phi_offset < 0.1:
+        max_phi_offset = phi_j - 0.1
+    delta_phi = np.logspace(np.log10(min_phi_offset), np.log10(max_phi_offset), n_phi_steps - 1)
+    delta_phi = np.concatenate((delta_phi, [phi_j - 0.1]))
+    phi = phi_j - delta_phi
 
-        # place n_jam_duplicates of the system randomly within the box, and jam them
-        # jam_data = join_systems([rb for _ in range(n_jam_duplicates)])
-        # jam_data.set_positions(1, rng_seed)  # set random positions
-        # jam_data.set_vertices_on_particles_as_disk()  # update the vertex positions  # may not need this anymore
-        # jam_data.save(jam_data_path, locations=["init"], save_trajectory=False)
-        # subprocess.run([
-        #     os.path.join(script_root, "jam_rigid_bumpy_wall_final"),
-        #     jam_data_path,
-        #     jam_data_path,
-        # ], check=True)
-        jam_data = load(jam_data_path, location=["final", "init"])
+    # Stable catalog of targets and integer TODO indices
+    delta_phi_all = delta_phi.copy()
+    todo_idx = np.arange(delta_phi_all.size, dtype=int)
 
-        # find the unique phi_j values and pick the highest one
-        pe_tol = 1e-15
-        pe_mask = jam_data.final.pe_total / jam_data.system_size < pe_tol
-        phi_j = np.max(jam_data.final.packing_fraction[pe_mask])
-        if phi_j - max_phi_offset < 0.1:
-            max_phi_offset = phi_j - 0.1
-        delta_phi = np.logspace(np.log10(min_phi_offset), np.log10(max_phi_offset), n_phi_steps - 1)
-        delta_phi = np.concatenate((delta_phi, [phi_j - 0.1]))
-        phi = phi_j - delta_phi
+    # Output HDF5 path (streaming writes per iteration)
+    h5_out_path = os.path.join(data_root, "box_sample_result.h5")
+    if os.path.exists(h5_out_path):
+        os.remove(h5_out_path)
 
-        # Stable catalog of targets and integer TODO indices
-        delta_phi_all = delta_phi.copy()
-        todo_idx = np.arange(delta_phi_all.size, dtype=int)
+    # create a block of n_phi_steps systems, each with a different phi value
+    offset_data = join_systems([rb for _ in range(n_phi_steps)])
+    offset_data.scale_to_packing_fraction(phi)
+    offset_data.add_array(delta_phi, 'delta_phi')
 
-        # Output HDF5 path (streaming writes per iteration)
-        h5_out_path = os.path.join(data_root, "box_sample_result.h5")
-        if os.path.exists(h5_out_path):
-            os.remove(h5_out_path)
+    # create max_n_dynamics_duplicates / n_phi_steps duplicates of the concatenated dynamics_data
+    offset_data = join_systems([offset_data for _ in range(max_n_dynamics_duplicates // n_phi_steps)])
+    offset_data.set_positions(1, rng_seed)  # set random positions
+    offset_data.save(offset_data_path, locations=["init"])
 
-        # create a block of n_phi_steps systems, each with a different phi value
-        offset_data = join_systems([rb for _ in range(n_phi_steps)])
-        offset_data.scale_to_packing_fraction(phi)
-        offset_data.add_array(delta_phi, 'delta_phi')
+    subprocess.run([  # equilibrate the system and save the data to the dynamics_data_path
+        os.path.join(script_root, "rigid_bumpy_equilibrate_wall"),
+        offset_data_path,
+        dynamics_data_path,
+    ], check=True)
 
-        # create max_n_dynamics_duplicates / n_phi_steps duplicates of the concatenated dynamics_data
-        offset_data = join_systems([offset_data for _ in range(max_n_dynamics_duplicates // n_phi_steps)])
-        offset_data.set_positions(1, rng_seed)  # set random positions
-        offset_data.save(offset_data_path, locations=["init"])
-        print(jam_data_path)
-        exit()
-
-        subprocess.run([  # equilibrate the system and save the data to the dynamics_data_path
-            os.path.join(script_root, "rigid_bumpy_equilibrate_wall"),
-            offset_data_path,
-            dynamics_data_path,
+    for temperature in temperatures:
+        dynamics_data_path_temp = os.path.join(data_root, f"dynamics_{temperature}")
+        if os.path.exists(dynamics_data_path_temp):
+            shutil.rmtree(dynamics_data_path_temp)
+        dynamics_data = load(dynamics_data_path, location=["final"])  # set the velocities and overwrite the data
+        dynamics_data.set_velocities(temperature, rng_seed)
+        dynamics_data.add_array(offset_data.delta_phi.copy(), 'delta_phi')
+        dynamics_data.save(dynamics_data_path_temp, locations=["init"])
+        subprocess.run([  # run the dynamics
+            os.path.join(script_root, "nve_rigid_bumpy_wall_final"),
+            dynamics_data_path_temp,
+            dynamics_data_path_temp,
+            str(n_steps),
+            str(100),
         ], check=True)
-        for temperature in temperatures:
-            dynamics_data_path_temp = os.path.join(data_root, f"dynamics_{temperature}")
-            if os.path.exists(dynamics_data_path_temp):
-                shutil.rmtree(dynamics_data_path_temp)
-            dynamics_data = load(dynamics_data_path, location=["final"])  # set the velocities and overwrite the data
-            dynamics_data.set_velocities(temperature, rng_seed)
-            dynamics_data.add_array(offset_data.delta_phi.copy(), 'delta_phi')
-            dynamics_data.save(dynamics_data_path_temp, locations=["init"])
-            subprocess.run([  # run the dynamics
-                os.path.join(script_root, "nve_rigid_bumpy_wall_final"),
-                dynamics_data_path_temp,
-                dynamics_data_path_temp,
-                str(n_steps),
-                str(100),
-            ], check=True)
 
-        # now run the initial dynamics data in the box sampling protocol to determine the free volume
-        for i in tqdm(range(max_n_iterations)):  # continuously sample until target per catalog index
-            if todo_idx.size == 0:
-                break
-            # Build systems only for remaining targets
-            curr_phi = phi_j - delta_phi_all[todo_idx]
-            box_sample_data = join_systems([rb for _ in range(len(todo_idx))])
-            box_sample_data.scale_to_packing_fraction(curr_phi)
-            box_sample_data.add_array(delta_phi_all[todo_idx], 'delta_phi')
-            print(todo_idx)
-            box_sample_data = join_systems([box_sample_data for _ in range(max_n_box_sample_duplicates // len(todo_idx))])
-            if os.path.exists(box_sample_data_path):
-                shutil.rmtree(box_sample_data_path)
-            box_sample_data.save(box_sample_data_path, locations=["init"])
-            subprocess.run([
-                os.path.join(script_root, "box_sample_rigid_bumpy_wall_final"),
-                box_sample_data_path,
-                box_sample_data_path,
-                str(n_box_samples),
-                str(0.5 * dynamics_data.vertex_rad.max()),
-                str(np.random.randint(0, 1000000)),
-            ], check=True)
-            box_sample_data = load(box_sample_data_path, location=["init", "final"], load_trajectory=True, load_full=True)
-            state, blocks = dedup_positions(
-                box_sample_data,
-                None,
-                catalog=delta_phi_all,
-                in_memory=False,
-                return_blocks=True,
-            )
-            append_state_h5(blocks, h5_out_path)
-            # Recompute TODO by integer keys using accumulated valid counts (keep zeros)
-            remaining = []
-            for idx in todo_idx:
-                cnt = state[idx]['n_valid_samples'] if (state is not None and idx in state) else 0
-                if cnt < n_samples_target:
-                    remaining.append(idx)
-            todo_idx = np.array(remaining, dtype=int)
-            del box_sample_data, state, blocks
-        shutil.rmtree(box_sample_data_path)
+    # now run the initial dynamics data in the box sampling protocol to determine the free volume
+    for i in tqdm(range(max_n_iterations)):  # continuously sample until target per catalog index
+        if todo_idx.size == 0:
+            break
+        # Build systems only for remaining targets
+        curr_phi = phi_j - delta_phi_all[todo_idx]
+        box_sample_data = join_systems([rb for _ in range(len(todo_idx))])
+        box_sample_data.scale_to_packing_fraction(curr_phi)
+        box_sample_data.add_array(delta_phi_all[todo_idx], 'delta_phi')
+        print(todo_idx)
+        box_sample_data = join_systems([box_sample_data for _ in range(max_n_box_sample_duplicates // len(todo_idx))])
+        if os.path.exists(box_sample_data_path):
+            shutil.rmtree(box_sample_data_path)
+        box_sample_data.save(box_sample_data_path, locations=["init"])
+        subprocess.run([
+            os.path.join(script_root, "box_sample_rigid_bumpy_wall_final"),
+            box_sample_data_path,
+            box_sample_data_path,
+            str(n_box_samples),
+            str(0.5 * dynamics_data.vertex_rad.max()),
+            str(np.random.randint(0, 1000000)),
+        ], check=True)
+        box_sample_data = load(box_sample_data_path, location=["init", "final"], load_trajectory=True, load_full=True)
+        state, blocks = dedup_positions(
+            box_sample_data,
+            None,
+            catalog=delta_phi_all,
+            in_memory=False,
+            return_blocks=True,
+        )
+        append_state_h5(blocks, h5_out_path)
+        # Recompute TODO by integer keys using accumulated valid counts (keep zeros)
+        remaining = []
+        for idx in todo_idx:
+            cnt = state[idx]['n_valid_samples'] if (state is not None and idx in state) else 0
+            if cnt < n_samples_target:
+                remaining.append(idx)
+        todo_idx = np.array(remaining, dtype=int)
+        del box_sample_data, state, blocks
+    shutil.rmtree(box_sample_data_path)
