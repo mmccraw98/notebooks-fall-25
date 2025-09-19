@@ -55,7 +55,7 @@ if __name__ == "__main__":
             os.makedirs(data_root)
 
         jam_data_path = os.path.join(data_root, "jam")
-        box_sample_data_path = os.path.join(data_root, "box-sample")
+        box_sample_data_path = os.path.join(data_root, "box-sample-large-box")
         if not os.path.exists(jam_data_path):
             os.makedirs(jam_data_path)
         if not os.path.exists(box_sample_data_path):
@@ -64,8 +64,8 @@ if __name__ == "__main__":
         n_jam_duplicates = 1000
 
         n_phi_steps = 50
-        min_phi = 0.01
-        min_phi_offset = 1e-4
+        min_phi = 0.001
+        min_phi_offset = 1e-1
 
         n_box_samples = 1e3
         n_samples_target = 1e3
@@ -82,16 +82,16 @@ if __name__ == "__main__":
         rb = create_2_particle_bumpy_disk_system(n_vertices, mu_eff, initial_packing_fraction)
         rb.set_neighbor_method(NeighborMethod.Naive)
 
-        # place n_jam_duplicates of the system randomly within the box, and jam them
-        jam_data = join_systems([rb for _ in range(n_jam_duplicates)])
-        jam_data.set_positions(1, rng_seed)  # set random positions
-        jam_data.set_vertices_on_particles_as_disk()  # update the vertex positions  # may not need this anymore
-        jam_data.save(jam_data_path, locations=["init"], save_trajectory=False)
-        subprocess.run([
-            os.path.join(script_root, "jam_rigid_bumpy_wall_final"),
-            jam_data_path,
-            jam_data_path,
-        ], check=True)
+        # # place n_jam_duplicates of the system randomly within the box, and jam them
+        # jam_data = join_systems([rb for _ in range(n_jam_duplicates)])
+        # jam_data.set_positions(1, rng_seed)  # set random positions
+        # jam_data.set_vertices_on_particles_as_disk()  # update the vertex positions  # may not need this anymore
+        # jam_data.save(jam_data_path, locations=["init"], save_trajectory=False)
+        # subprocess.run([
+        #     os.path.join(script_root, "jam_rigid_bumpy_wall_final"),
+        #     jam_data_path,
+        #     jam_data_path,
+        # ], check=True)
         jam_data = load(jam_data_path, location=["final", "init"])
 
         # find the unique phi_j values and pick the highest one
@@ -116,10 +116,11 @@ if __name__ == "__main__":
 
         # create max_n_box_sample_duplicates / n_phi_steps duplicates of the concatenated offset_data
         bs_data = join_systems([bs_data for _ in range(max_n_box_sample_duplicates // n_phi_steps)])
-        domain_length = 0.1 * np.ones(bs_data.pos.shape[0])
-        build_domains(bs_data, domain_style="square", domain_kwargs={"domain_length": domain_length})
+        domain_length = 10000.0 * np.ones(bs_data.pos.shape[0])
+        build_domains(bs_data, domain_style="square", domain_kwargs={"domain_length": domain_length}, clamp_to_box=True)
         shutil.rmtree(box_sample_data_path)
         bs_data.save(box_sample_data_path, locations=["init"])
+        np.save(os.path.join(box_sample_data_path, "domain_area.npy"), bs_data.domain_area)  # the data saving still isnt fully working so we need to manually save this
 
         subprocess.run([
             os.path.join(script_root, "domain_sample_rigid_bumpy_wall_final"),

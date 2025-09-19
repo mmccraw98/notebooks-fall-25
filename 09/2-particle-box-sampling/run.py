@@ -331,7 +331,6 @@ if __name__ == "__main__":
         offset_data.set_positions(1, rng_seed)  # set random positions
         offset_data.save(offset_data_path, locations=["init"])
         print(jam_data_path)
-        exit()
 
         subprocess.run([  # equilibrate the system and save the data to the dynamics_data_path
             os.path.join(script_root, "rigid_bumpy_equilibrate_wall"),
@@ -353,6 +352,8 @@ if __name__ == "__main__":
                 str(n_steps),
                 str(100),
             ], check=True)
+
+            exit()
 
         # now run the initial dynamics data in the box sampling protocol to determine the free volume
         for i in tqdm(range(max_n_iterations)):  # continuously sample until target per catalog index
