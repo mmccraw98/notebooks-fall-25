@@ -9,6 +9,12 @@ import os
 import shutil
 from tqdm import tqdm
 
+import time
+
+import tempfile
+
+import matplotlib.pyplot as plt
+
 
 def create_rigid_bumpy_system_from_n_vertices(n_vertices_per_particle: np.ndarray, radii: np.ndarray, packing_fraction: float, mu_eff: float, which: str):
     """
@@ -86,7 +92,7 @@ def generate_polydisperse_radii(total: int, std_dev: float, avg_size: float = 0.
     np.random.seed(random_seed)
     return np.random.normal(size=total, loc=avg_size, scale=std_dev)
 
-def build_rigid_bumpy_system_from_radii(radii: np.ndarray, which: str, mu_eff: float, nv: int, packing_fraction: float, add_core: bool = False, rng_seed: int = 0):
+def build_rigid_bumpy_system_from_radii(radii: np.ndarray, which: str, mu_eff: float, nv: int, packing_fraction: float, add_core: bool = False, rng_seed: int = 0, cap_nv: float = np.inf):
     """
     radii: np.ndarray containing the radius for each particle
     which: str defining what the target particle is - one of "avg" (design around the average particle) or "small" (design around the small particle)
@@ -95,6 +101,7 @@ def build_rigid_bumpy_system_from_radii(radii: np.ndarray, which: str, mu_eff: f
     packing_fraction: float packing fraction of the final system
     add_core: bool whether or not to build the particles with cores
     rng_seed: int seed for the random number generator
+    cap_nv: float target number of vertices * cap_nv gives the maximum number of vertices for any particle
     """
     np.random.seed(rng_seed)
     min_nv = 2
@@ -123,6 +130,8 @@ def build_rigid_bumpy_system_from_radii(radii: np.ndarray, which: str, mu_eff: f
             mask = radii == rad
             diffs = np.abs(calc_mu_eff(vertex_radius, rad, nv_trial) - mu_eff)
             nv_pred = nv_trial[~np.isnan(diffs)][np.argmin(diffs[~np.isnan(diffs)])]
+            if cap_nv and nv_pred > cap_nv * nv:
+                nv_pred = int(cap_nv * nv)
             n_vertices_per_particle[mask] = nv_pred
         if np.any(np.diff(np.unique(n_vertices_per_particle)) > int(0.6 * np.min(n_vertices_per_particle[n_vertices_per_particle > 1]))):
             print('WARNING: large variation detected in n_vertices_per_particle!  unique values:', np.unique(n_vertices_per_particle))
@@ -166,6 +175,41 @@ def build_rigid_bumpy_system_from_radii(radii: np.ndarray, which: str, mu_eff: f
 
     return rb
 
+def set_standard_cell_list_parameters(rb: RigidBumpy, alpha: float = 0.3):
+    """
+    Set the standard cell list parameters for a RigidBumpy object.
+    alpha: size of the verlet skin in terms of the largest vertex diameter
+    """
+    max_vertex_diam = 2.0 * np.array([np.max(rb.vertex_rad[rb.vertex_system_offset[i]:rb.vertex_system_offset[i+1]]) for i in range(rb.n_systems())])
+    rb.neighbor_cutoff = np.ones(rb.n_systems()).astype(DT_FLOAT) * (max_vertex_diam * (1 + alpha))
+    rb.thresh2 = (np.ones_like(rb.neighbor_cutoff) * max_vertex_diam * alpha / 2.0) ** 2
+    rb.cell_dim = np.floor(rb.box_size / rb.neighbor_cutoff[:, None]).astype(DT_INT)
+    rb.cell_dim = np.clip(rb.cell_dim, 1, None)  # ensure that the cell dim is at least 1
+    rb.cell_size = np.ones_like(rb.box_size).astype(DT_FLOAT) * rb.box_size / rb.cell_dim
+    rb.cell_system_start = np.concatenate(([0], np.cumsum(np.prod(rb.cell_dim, axis=1)))).astype(DT_INT)
+
+def get_minimized_rigid_bumpy_system(radii, which, mu_eff, nv, packing_fraction, add_core, rng_seed, cap_nv, script_path = os.path.join("/home/mmccraw/dev/dpmd/build/", "rigid_bumpy_equilibrate_pbc")):
+    # make a system of single vertex particles and minimize its energy, then use its positions to build a system of multi-vertex particles
+    disks = build_rigid_bumpy_system_from_radii(radii, which, 0, nv, packing_fraction, False, rng_seed)
+    disks.set_neighbor_method(NeighborMethod.Cell)
+    set_standard_cell_list_parameters(disks, 0.3)
+    tmp_path = tempfile.mkdtemp()
+    disks.save(tmp_path)
+    subprocess.run([
+        script_path,
+        tmp_path,
+        tmp_path,
+    ], check=True)
+    disks = load(tmp_path, location=["final", "init"])
+    shutil.rmtree(tmp_path)
+
+    rb = build_rigid_bumpy_system_from_radii(radii, which, mu_eff, nv, packing_fraction, add_core, rng_seed, cap_nv=cap_nv)
+    rb.box_size = disks.box_size.copy()
+    rb.pos = disks.pos.copy()
+    rb.set_vertices_on_particles_as_disk()
+    rb.calculate_mu_eff()
+    return rb
+
 if __name__ == "__main__":
     # ensure this can handle single vertex case?
     # radii = generate_polydisperse_radii(10, 1e-1)  # use 'avg'
@@ -173,47 +217,41 @@ if __name__ == "__main__":
     radii = generate_bidisperse_radii(100, 0.5, 1.4)  # use 'small'
     which = 'small'
 
-    mu_eff = 0
-    nv = 10
-    packing_fraction = 0.7
-    add_core = True
-    import time
-    rng_seed = int(time.time())
+    systems = []
 
-    rb = build_rigid_bumpy_system_from_radii(
-        radii, which, mu_eff, nv, packing_fraction, add_core, rng_seed
-    )
+    packing_fraction = 0.5
+    for nv in [3, 6, 10, 20]:
+        for mu_eff in [0.01, 0.1, 0.5, 1.0]:
+            rng_seed = int(time.time())
+            add_core = (nv >= 20 and mu_eff >= 0.1) or (nv >= 3 and mu_eff > 0.5)
+            rb = get_minimized_rigid_bumpy_system(radii, which, mu_eff, nv, packing_fraction, add_core, rng_seed, cap_nv=3)
+            systems.append(rb)
+            draw_particles_frame(None, plt.gca(), rb, system_id=0, use_pbc=True, which='vertex', cmap_name='viridis', location=None)
+            plt.savefig(f'figures/test_{nv}_{mu_eff}.png')
+            plt.close()
+    
+    rb = join_systems(systems)
+    
+    target_path = "/home/mmccraw/dev/data/09-09-25/new-initializations/rb"
+    if not os.path.exists(target_path):
+        os.makedirs(target_path)
+    rb.set_neighbor_method(NeighborMethod.Cell)
+    set_standard_cell_list_parameters(rb, 0.3)
+    rb.save(target_path)
 
-    print(np.unique(rb.n_vertices_per_particle))
-
-    # issues:
-    # using_core needs to be saved properly
-    # any undefined / misc arrays in the particle class should not be saved
-    # TODO: pydpmd: ensure that extraneous / undefined arrays are not saved to the h5!
-
-    # TODO: dpmd: when saving to init (and static) in append mode, only save a field if it doesnt already exist in the h5
-
-    rb.calculate_mu_eff()
-
-    rb.set_neighbor_method(NeighborMethod.Naive)
-
-    import matplotlib.pyplot as plt
-    draw_particles_frame(0, plt.gca(), rb, system_id=0, which='vertex', cmap_name='viridis', location=None)
-    plt.savefig('test.png')
-    plt.close()
-
-    rb_path = "/home/mmccraw/dev/data/09-09-25/new-initializations/rb"
-    if not os.path.exists(rb_path):
-        os.makedirs(rb_path)
-    rb.save(rb_path)
+    subprocess.run([os.path.join("/home/mmccraw/dev/dpmd/build/", "rigid_bumpy_equilibrate_pbc"), target_path, target_path], check=True)
+    rb = load(target_path, location=["final", "init"])
+    shutil.rmtree(target_path)
+    
+    rb.set_velocities(1e-3, 0)
+    if not os.path.exists(target_path):
+        os.makedirs(target_path)
+    rb.save(target_path)
 
     subprocess.run([
-        os.path.join("/home/mmccraw/dev/dpmd/build/", "rigid_bumpy_equilibrate_pbc"),
-        rb_path,
-        rb_path,
+        os.path.join("/home/mmccraw/dev/dpmd/build/", "nve_rigid_bumpy_pbc_final"),
+        target_path,
+        target_path,
+        str(1e4),
+        str(1e0)
     ], check=True)
-
-    rb = load(rb_path, location=["final", "init"])
-    draw_particles_frame(0, plt.gca(), rb, system_id=0, which='vertex', cmap_name='viridis', location='final')
-    plt.savefig('test_final.png')
-    plt.close()
