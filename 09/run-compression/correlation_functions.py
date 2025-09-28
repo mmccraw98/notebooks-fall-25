@@ -1,7 +1,30 @@
 import numpy as np
 from pydpmd.data import load
 import os
+from numba import njit
 from pydpmd.calc import run_binned, fused_msd_kernel, TimeBins, LagBinsExact, LagBinsLog, LagBinsLinear, LagBinsPseudoLog, requires_fields
+
+@njit(cache=True, fastmath=True)
+def _hist_pairs_pbc(pos, Lx, Ly, edges):
+    n = pos.shape[0]
+    nb = edges.shape[0] - 1
+    counts = np.zeros(nb, dtype=np.int64)
+    rmax = edges[-1]
+    for i in range(n - 1):
+        xi = pos[i, 0]
+        yi = pos[i, 1]
+        for j in range(i + 1, n):
+            dx = xi - pos[j, 0]
+            dy = yi - pos[j, 1]
+            dx -= Lx * np.round(dx / Lx)
+            dy -= Ly * np.round(dy / Ly)
+            r = (dx * dx + dy * dy) ** 0.5
+            if r <= 0.0 or r >= rmax:
+                continue
+            k = np.searchsorted(edges, r) - 1
+            if 0 <= k < nb:
+                counts[k] += 1
+    return counts
 
 def embed_anbles(angle, angular_period, mask=None):
     if mask is None:
@@ -69,23 +92,88 @@ def shear_modulus_kernel(indices, get_frame, stress_xy_mean=0):
     off_diag_1 = (s_x_1[:, 1] + s_y_1[:, 0]) / 2 - stress_xy_mean
     return off_diag_0 * off_diag_1
 
-def compute_msd(data, save_path=None):
+@requires_fields("pos")
+def pair_correlation_function_kernel(indices, get_frame, system_id, box_size, rad, bins):
+    t0 = indices[0]
+    pos = get_frame(t0)['pos']
+
+    # Expect bin edges for reproducibility/speed; if an int is given, build global edges.
+    if np.isscalar(bins):
+        # Use global r_max = min(Lx, Ly)/2 across systems so edges are consistent
+        rmax = float(np.min(np.min(box_size, axis=1) / 2.0))
+        edges = np.linspace(0.0, rmax, int(bins) + 1, dtype=np.float64)
+    else:
+        edges = np.asarray(bins, dtype=np.float64)
+    nb = edges.size - 1
+    shell_area = np.pi * (edges[1:]**2 - edges[:-1]**2)
+
+    g_values = []
+    for sid in np.unique(system_id):
+        Lx, Ly = float(box_size[sid, 0]), float(box_size[sid, 1])
+        area = Lx * Ly
+        idx_s = (system_id == sid)
+        r_s = rad[idx_s]
+        p_sys = pos[idx_s]
+        g_local = []
+        for val in np.unique(r_s):
+            f = (r_s == val)
+            p = np.ascontiguousarray(p_sys[f], dtype=np.float64)
+            n = p.shape[0]
+            if n < 2:
+                g_local.append(np.zeros(nb, dtype=np.float64))
+                continue
+            counts = _hist_pairs_pbc(p, Lx, Ly, edges).astype(np.float64)
+            counts *= 2.0  # convert i<j counts to ordered-pair counts to match your normalization
+            norm = shell_area * (n * (n - 1)) / area
+            g_local.append(counts / norm)
+        g_values.append(g_local)
+    return np.asarray(g_values)
+
+def compute_pair_correlation_function(data, radial_bins=None, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['G'], np.load(save_path)['r']
+    if radial_bins is None:
+        radial_bins = np.linspace(0.5, 3, 1000)
+    bins = TimeBins.from_source(data.trajectory)
+    res = run_binned(pair_correlation_function_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'box_size': data.box_size, 'rad': data.rad, 'bins': radial_bins}, show_progress=True, n_workers=20)
+    r = (radial_bins[1:] + radial_bins[:-1]) / 2
+    G = np.mean(res.mean, axis=0)
+    if save_path is not None:
+        np.savez(save_path, G=G, r=r)
+    return G, r
+
+def compute_msd(data, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['msd'], np.load(save_path)['t']
     bins = LagBinsPseudoLog.from_source(data.trajectory)
     res = run_binned(msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size}, show_progress=True, n_workers=10)
     if save_path is not None:
         np.savez(save_path, msd=res.mean, t=bins.values())
     return res.mean, bins.values()
 
-def compute_rotational_msd(data, save_path=None):
+def compute_rotational_msd(data, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['msd'], np.load(save_path)['t']
     bins = LagBinsPseudoLog.from_source(data.trajectory)
     res = run_binned(fused_msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size}, show_progress=True, n_workers=10)
     if save_path is not None:
         np.savez(save_path, msd=res.mean, t=bins.values())
     return res.mean, bins.values()
 
-def compute_shear_modulus(data, save_path=None, mean_stress=0):
+def compute_shear_modulus(data, save_path=None, subtract_mean_stress=True, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['shear_modulus'], np.load(save_path)['t']
+    temp = np.array([data.trajectory[i].temperature for i in range(data.trajectory.num_frames())])
+    area = np.prod(data.box_size, axis=-1)
+    if subtract_mean_stress:
+        mean_stress = np.mean([
+            (data.trajectory[i].stress_tensor_total_x[:, 1] + data.trajectory[i].stress_tensor_total_y[:, 0]) / 2.0
+            for i in range(data.trajectory.num_frames())
+        ], axis=0)
+    else:
+        mean_stress = 0
     bins = LagBinsPseudoLog.from_source(data.trajectory)
     res = run_binned(shear_modulus_kernel, data.trajectory, bins, kernel_kwargs={'stress_xy_mean': mean_stress}, show_progress=True, n_workers=10)
     if save_path is not None:
-        np.savez(save_path, shear_modulus=res.mean, t=bins.values())
-    return res.mean, bins.values()
+        np.savez(save_path, shear_modulus=res.mean * area / np.mean(temp, axis=0), t=bins.values())
+    return res.mean * area / np.mean(temp, axis=0), bins.values()
