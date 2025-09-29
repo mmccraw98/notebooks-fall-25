@@ -13,13 +13,13 @@ import time
 # repeat
 
 if __name__ == "__main__":
-    root = "/home/mmccraw/dev/data/09-27-25/run-1/"
+    root = "/home/mmccraw/dev/data/09-27-25/run-4/"
     if not os.path.exists(root):
         os.makedirs(root)
 
     radii = generate_bidisperse_radii(1000, 0.5, 1.4)
     which = 'small'
-    packing_fraction = 0.7
+    packing_fraction = 0.5
     phi_increment = 1e-2
     target_packing_fraction = 0.9
     temperature = 1e-4
@@ -29,8 +29,12 @@ if __name__ == "__main__":
     # build the initial data and equilibrate it, ideally to a 0-overlap state
     mu_effs = []
     nvs = []
-    for mu_eff in [0.01, 0.05, 0.1, 0.5, 1.0]:
+    # for mu_eff in [0.01, 0.05, 0.1, 0.5, 1.0]:
+    #     for nv in [3, 6, 10, 20, 30]:
+    for mu_eff in [0.01, 0.05]:
         for nv in [3, 6, 10, 20, 30]:
+            if nv == 30 and mu_eff != 0.01:
+                continue
             mu_effs.append(mu_eff)
             nvs.append(nv)
     n_duplicates = len(mu_effs)
@@ -79,7 +83,7 @@ if __name__ == "__main__":
         rb = load(dynamics_data_path, location=["final", "init"])
         if np.all(rb.init.packing_fraction > target_packing_fraction):
             break
-        
+
         # increment the file index and reset the init_path
         file_index += 1
         init_path = dynamics_data_path

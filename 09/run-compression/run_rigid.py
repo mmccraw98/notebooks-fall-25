@@ -5,7 +5,7 @@ from system_building_resources import *
 import time
 
 if __name__ == "__main__":
-    root = "/home/mmccraw/dev/data/09-27-25/run-1/"
+    # root = "/home/mmccraw/dev/data/09-27-25/run-1/"
     if not os.path.exists(root):
         os.makedirs(root)
 
