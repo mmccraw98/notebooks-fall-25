@@ -47,25 +47,34 @@ def compute_generalized_pos(pos, angle, system_id, angular_period, box_size=None
     return np.column_stack([pos / L, np.cos(new_angle), np.sin(new_angle)])
 
 @requires_fields("pos")
-def msd_kernel(indices, get_frame, system_id, system_size):
+def msd_kernel(indices, get_frame, system_id, system_size, system_offset):
     t0, t1 = indices
     r0 = get_frame(t0)['pos']
     r1 = get_frame(t1)['pos']
     dr = r1 - r0
+    dr -= (np.add.reduceat(dr, system_offset[:-1], axis=0) / system_size[:, None])[system_id]  # subtract off the mean drift of each system
     return np.bincount(system_id, weights=np.sum(dr ** 2, axis=-1)) / system_size
 
 @requires_fields("pos", "angle")
-def fused_msd_kernel(indices, get_frame, system_id, system_size):
+def fused_msd_kernel(indices, get_frame, system_id, system_size, system_offset):
     t0, t1 = indices
     r0 = get_frame(t0)['pos']
     r1 = get_frame(t1)['pos']
     theta0 = get_frame(t0)['angle']
     theta1 = get_frame(t1)['angle']
     dr = r1 - r0
+    dr -= (np.add.reduceat(dr, system_offset[:-1], axis=0) / system_size[:, None])[system_id]  # subtract off the mean drift of each system
     msd = np.bincount(system_id, weights=np.sum(dr ** 2, axis=-1)) / system_size
     dtheta = (theta1 - theta0)
     angular_msd = np.bincount(system_id, weights=dtheta ** 2) / system_size
     return np.column_stack([msd, angular_msd])
+
+@requires_fields("vel")
+def vacf_kernel(indices, get_frame, system_id, system_size):
+    t0, t1 = indices
+    v0 = get_frame(t0)['vel']
+    v1 = get_frame(t1)['vel']
+    return np.bincount(system_id, weights=np.sum(v0 * v1, axis=1)) / system_size
 
 @requires_fields("pos", "angle")
 def fused_generalized_msd_kernel(indices, get_frame, system_id, system_size, angular_period, box_size):
@@ -142,11 +151,21 @@ def compute_pair_correlation_function(data, radial_bins=None, save_path=None, ov
         np.savez(save_path, G=G, r=r)
     return G, r
 
+def compute_vacf(data, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['vacf'], np.load(save_path)['t']
+    bins = LagBinsPseudoLog.from_source(data.trajectory)
+    res = run_binned(vacf_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size}, show_progress=True, n_workers=10)
+    if save_path is not None:
+        np.savez(save_path, vacf=res.mean, t=bins.values())
+    return res.mean, bins.values()
+
+
 def compute_msd(data, save_path=None, overwrite=False):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['msd'], np.load(save_path)['t']
     bins = LagBinsPseudoLog.from_source(data.trajectory)
-    res = run_binned(msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size}, show_progress=True, n_workers=10)
+    res = run_binned(msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset}, show_progress=True, n_workers=10)
     if save_path is not None:
         np.savez(save_path, msd=res.mean, t=bins.values())
     return res.mean, bins.values()
@@ -155,7 +174,7 @@ def compute_rotational_msd(data, save_path=None, overwrite=False):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['msd'], np.load(save_path)['t']
     bins = LagBinsPseudoLog.from_source(data.trajectory)
-    res = run_binned(fused_msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size}, show_progress=True, n_workers=10)
+    res = run_binned(fused_msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset}, show_progress=True, n_workers=10)
     if save_path is not None:
         np.savez(save_path, msd=res.mean, t=bins.values())
     return res.mean, bins.values()

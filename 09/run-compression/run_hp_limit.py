@@ -14,16 +14,16 @@ import time
 
 if __name__ == "__main__":
     for temperature, (n_steps, save_freq) in zip(
-        [1e-4, 1e-5, 1e-6],
-        [(5e4, 5e1), (1e5, 1e2), (5e5, 5e2)]):
-        root = f"/home/mmccraw/dev/data/09-27-25/finding-hard-particle-limit-dynamics/T_{temperature:.3e}"
+        [1e-5, 1e-6, 1e-7],
+        [(1e6, 1e3), (5e6, 1e3), (1e7, 1e4)]):
+        root = f"/home/mmccraw/dev/data/09-27-25/finding-hard-particle-limit-dynamics-final/T_{temperature:.3e}"
         if not os.path.exists(root):
             os.makedirs(root)
 
-        radii = generate_bidisperse_radii(50, 0.5, 1.4)
+        radii = generate_bidisperse_radii(100, 0.5, 1.4)
         which = 'small'
         packing_fraction = 0.6
-        phi_increment = 1e-2
+        phi_increment = 2e-2
         target_packing_fraction = 0.8
         
         # build the initial data and equilibrate it, ideally to a 0-overlap state
@@ -83,3 +83,6 @@ if __name__ == "__main__":
             # increment the file index and reset the init_path
             file_index += 1
             init_path = dynamics_data_path
+            
+            if file_index > 5:
+                break
