@@ -7,15 +7,16 @@ import shutil
 from correlation_functions import compute_shear_modulus
 
 if __name__ == "__main__":
-    for i in range(10):
-        root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus/trial-{i}/"
+    for i in range(100):
+        # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-final/trial-{i}/"
+        root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small/trial-{i}/"
         if not os.path.exists(root):
             os.makedirs(root)
 
-        radii = generate_bidisperse_radii(1000, 0.5, 1.4)
+        radii = generate_bidisperse_radii(100, 0.5, 1.4)
         which = 'small'
-        packing_fraction = 0.7
-        phi_increment = 1e-2
+        packing_fraction = 0.75
+        phi_increment = 1e-3
         temperature = 1e-5
         n_steps = 1e5
         save_freq = 1e0
@@ -29,13 +30,13 @@ if __name__ == "__main__":
             for nv in [3, 6, 10, 20, 30]:
                 mu_effs.append(mu_eff)
                 nvs.append(nv)
-        # mu_effs = mu_effs * 10
-        # nvs = nvs * 10
+        mu_effs = mu_effs * 10
+        nvs = nvs * 10
 
         n_duplicates = len(mu_effs)
         cap_nv = 3
         add_core = True
-        rb = build_rigid_bumpy_system_from_radii(radii, which, mu_effs, nvs, packing_fraction, add_core, cap_nv, n_duplicates)
+        rb = build_rigid_bumpy_system_from_radii(radii, which, mu_effs, nvs, packing_fraction, add_core, cap_nv, 'uniform', n_duplicates)
         init_path = os.path.join(root, "init")
         rb.set_neighbor_method(NeighborMethod.Cell)
         set_standard_cell_list_parameters(rb, 0.3)
@@ -79,8 +80,19 @@ if __name__ == "__main__":
                 str(dt),
             ], check=True)
 
-            # delete the compression path
-            shutil.rmtree(compression_path)
+            # calculate the shear modulus and save it with mu_eff, nv, packing_fraction, and temperature
+            rb = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
+            rb.calculate_mu_eff()
+            shear_modulus_path = os.path.join(root, f"shear_modulus_{file_index}.npz")
+            shear_modulus, t = compute_shear_modulus(rb, None)
+            np.savez(
+                shear_modulus_path,
+                shear_modulus=shear_modulus,
+                t=t,
+                mu_eff=rb.mu_eff[rb.system_offset[:-1]],
+                nv=rb.n_vertices_per_particle[rb.system_offset[:-1]],
+                packing_fraction=rb.init.packing_fraction,
+            )
 
             # load the data, split into separate systems, recombining only those that have a packing fraction less than the target
             rb = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
@@ -94,19 +106,9 @@ if __name__ == "__main__":
             rb = join_systems(remaining_systems)
             rb.save(init_path)
 
-            # calculate the shear modulus and save it with mu_eff, nv, packing_fraction, and temperature
-            rb = load(init_path, location=["final", "init"], load_trajectory=True, load_full=False)
-            shear_modulus_path = os.path.join(root, f"shear_modulus_{file_index}.npz")
-            shear_modulus, t = compute_shear_modulus(rb, None)
-            np.savez(
-                shear_modulus_path,
-                shear_modulus=shear_modulus,
-                t=t,
-                mu_eff=rb.mu_eff[rb.system_offset[:-1]],
-                nv=rb.n_vertices_per_particle[rb.system_offset[:-1]],
-                packing_fraction=rb.init.packing_fraction,
-                temperature=np.mean([rb.trajectory[i].temperature for i in range(rb.trajectory.num_frames())], axis=0)
-            )
+            # delete the compression path
+            shutil.rmtree(compression_path)
+            shutil.rmtree(dynamics_data_path)
 
             # increment the file index
             file_index += 1

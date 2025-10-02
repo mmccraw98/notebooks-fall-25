@@ -1,0 +1,92 @@
+import pydpmd as md
+import numpy as np
+import os
+from system_building_resources import *
+import time
+import shutil
+
+if __name__ == "__main__":
+    root = f"/home/mmccraw/dev/data/10-01-25/new-moment-of-inertia/"
+    if not os.path.exists(root):
+        os.makedirs(root)
+
+    radii = generate_bidisperse_radii(100, 0.5, 1.4)
+    which = 'small'
+    packing_fraction = 0.7
+    phi_increment = 1e-2
+    temperature = 1e-5
+    n_steps = 1e5
+    save_freq = 1e2
+    packing_fraction_target = 0.85
+    dt = 5e-2
+
+    mu_effs = []
+    nvs = []
+    for mu_eff in [0.01, 0.05, 0.1, 0.5, 1.0]:
+        for nv in [3, 6, 10, 20, 30]:
+            mu_effs.append(mu_eff)
+            nvs.append(nv)
+    
+    n_duplicates = len(mu_effs)
+    cap_nv = 3
+    add_core = True
+    
+    # make one set of systems for each inertia assignment (points - old, uniform - new)
+    rb_points = build_rigid_bumpy_system_from_radii(radii, which, mu_effs, nvs, packing_fraction, add_core, cap_nv, "points", n_duplicates)
+    rb_uniform = build_rigid_bumpy_system_from_radii(radii, which, mu_effs, nvs, packing_fraction, add_core, cap_nv, "uniform", n_duplicates)
+    rb = join_systems([rb_points, rb_uniform])
+
+    init_path = os.path.join(root, "init")
+    rb.set_neighbor_method(NeighborMethod.Cell)
+    set_standard_cell_list_parameters(rb, 0.3)
+    rb.save(init_path)
+    
+    # run the iterative compress-dynamics protocol
+    file_index = 0
+    while True:
+        # compress the data, incrementing the packing fraction by phi_increment and maintaining the temperature
+        rb = load(init_path, location=["final", "init"])
+        compression_path = os.path.join(root, f"compression_{file_index}")
+        rb.set_velocities(temperature, np.random.randint(0, 1e9))
+        rb.set_neighbor_method(NeighborMethod.Cell)
+        set_standard_cell_list_parameters(rb, 0.3)
+        rb.save(compression_path)
+        subprocess.run([
+            os.path.join("/home/mmccraw/dev/dpmd/build/", "nvt_rescale_rigid_bumpy_pbc_compress"),
+            compression_path,
+            compression_path,
+            str(int(max(int(n_steps / 10), 1e3) / 2)),  # total number of steps - half are used for compression, the other half are used for equilibration
+            str(phi_increment),
+            str(temperature),
+            str(dt),
+        ], check=True)
+
+        # run nve dynamics from the output of the compression data
+        rb = load(compression_path, location=["final", "init"])
+        dynamics_data_path = os.path.join(root, f"dynamics_{file_index}")
+        rb.set_velocities(temperature, np.random.randint(0, 1e9))
+        rb.set_neighbor_method(NeighborMethod.Cell)
+        set_standard_cell_list_parameters(rb, 0.3)
+        rb.save(dynamics_data_path)
+        subprocess.run([
+            os.path.join("/home/mmccraw/dev/dpmd/build/", "nve_rigid_bumpy_pbc_final"),
+            dynamics_data_path,
+            dynamics_data_path,
+            str(n_steps),  # total number of dynamics steps
+            str(save_freq),  # save frequency
+            str(dt),
+        ], check=True)
+
+        # load the data, split into separate systems, recombining only those that have a packing fraction less than the target
+        rb = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
+        remaining_systems = [
+            _ for i, _ in enumerate(split_systems(rb))
+            if rb.init.packing_fraction[i] < packing_fraction_target
+        ]
+        if len(remaining_systems) == 0:
+            break
+        rb = join_systems(remaining_systems)
+        rb.save(init_path)
+
+        # increment the file index
+        file_index += 1
