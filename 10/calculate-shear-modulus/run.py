@@ -7,21 +7,25 @@ import shutil
 from correlation_functions import compute_shear_modulus
 
 if __name__ == "__main__":
-    for i in range(100):
+    for i in range(1):
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-final/trial-{i}/"
-        root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small/trial-{i}/"
+        # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small/trial-{i}/"
+        # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small-lower-temp/trial-{i}/"
+        # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small-lower-temp-extra/trial-{i}/"
+        root = f"/home/mmccraw/dev/data/10-01-25/short-test/trial-{i}/"
         if not os.path.exists(root):
             os.makedirs(root)
 
         radii = generate_bidisperse_radii(100, 0.5, 1.4)
         which = 'small'
-        packing_fraction = 0.75
+        packing_fraction = 0.8
         phi_increment = 1e-3
-        temperature = 1e-5
+        temperature = 1e-6
         n_steps = 1e5
-        save_freq = 1e0
-        pressure_target = 1e-2
-        dt = 1e-2
+        save_freq = 1e2
+        pressure_target = 1e-3
+        packing_fraction_target = 0.9
+        dt = 2e-2
 
         # build the initial data and equilibrate it, ideally to a 0-overlap state
         mu_effs = []
@@ -30,8 +34,8 @@ if __name__ == "__main__":
             for nv in [3, 6, 10, 20, 30]:
                 mu_effs.append(mu_eff)
                 nvs.append(nv)
-        mu_effs = mu_effs * 10
-        nvs = nvs * 10
+        # mu_effs = mu_effs * 10
+        # nvs = nvs * 10
 
         n_duplicates = len(mu_effs)
         cap_nv = 3
@@ -80,35 +84,66 @@ if __name__ == "__main__":
                 str(dt),
             ], check=True)
 
-            # calculate the shear modulus and save it with mu_eff, nv, packing_fraction, and temperature
-            rb = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
-            rb.calculate_mu_eff()
-            shear_modulus_path = os.path.join(root, f"shear_modulus_{file_index}.npz")
-            shear_modulus, t = compute_shear_modulus(rb, None)
-            np.savez(
-                shear_modulus_path,
-                shear_modulus=shear_modulus,
-                t=t,
-                mu_eff=rb.mu_eff[rb.system_offset[:-1]],
-                nv=rb.n_vertices_per_particle[rb.system_offset[:-1]],
-                packing_fraction=rb.init.packing_fraction,
-            )
+            # # calculate the average overlap in each system
+            # rb = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
+            # rb.calculate_mu_eff()
+            # overlap_path = os.path.join(root, f"overlap_{file_index}.npz")
+            # first column stores the overlap for vertex i, second column stores the number of overlaps for vertex i
+            # mean_overlaps = np.sum(  # sum over all frames
+            #     np.array(
+            #         [
+            #             np.add.reduceat(  # sum over all vertices within each system
+            #                 rb.trajectory[i].overlaps, rb.system_offset[:-1]
+            #             , axis=0)
+            #             for i in range(rb.trajectory.num_frames())
+            #         ]
+            # ), axis=0)
+            # divide the total number of overlaps by the number of overlapping vertices
+            # repeat for all systems
+            # mean_overlaps = mean_overlaps[:, 0] / mean_overlaps[:, 1]
+            # np.savez(
+            #     overlap_path,
+            #     overlap=mean_overlaps,
+            #     mu_eff=rb.mu_eff[rb.system_offset[:-1]],
+            #     nv=rb.n_vertices_per_particle[rb.system_offset[:-1]],
+            #     packing_fraction=rb.init.packing_fraction,
+            # )
+
+            # # calculate the shear modulus and save it with mu_eff, nv, packing_fraction, and temperature
+            # rb = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
+            # rb.calculate_mu_eff()
+            # shear_modulus_path = os.path.join(root, f"shear_modulus_{file_index}.npz")
+            # shear_modulus, t = compute_shear_modulus(rb, None)
+            # np.savez(
+            #     shear_modulus_path,
+            #     shear_modulus=shear_modulus,
+            #     t=t,
+            #     mu_eff=rb.mu_eff[rb.system_offset[:-1]],
+            #     nv=rb.n_vertices_per_particle[rb.system_offset[:-1]],
+            #     packing_fraction=rb.init.packing_fraction,
+            # )
+
 
             # load the data, split into separate systems, recombining only those that have a packing fraction less than the target
             rb = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
-            mean_pressure = 0.5 * np.mean([rb.trajectory[i].stress_tensor_total_x[:, 0] + rb.trajectory[i].stress_tensor_total_y[:, 0] for i in range(rb.trajectory.num_frames())], axis=0)
             remaining_systems = [
                 _ for i, _ in enumerate(split_systems(rb))
-                if mean_pressure[i] < pressure_target
+                if rb.init.packing_fraction[i] < packing_fraction_target
             ]
+
+            # mean_pressure = 0.5 * np.mean([rb.trajectory[i].stress_tensor_total_x[:, 0] + rb.trajectory[i].stress_tensor_total_y[:, 0] for i in range(rb.trajectory.num_frames())], axis=0)
+            # remaining_systems = [
+            #     _ for i, _ in enumerate(split_systems(rb))
+            #     if mean_pressure[i] < pressure_target
+            # ]
             if len(remaining_systems) == 0:
                 break
             rb = join_systems(remaining_systems)
             rb.save(init_path)
 
-            # delete the compression path
-            shutil.rmtree(compression_path)
-            shutil.rmtree(dynamics_data_path)
+            # # delete the compression path
+            # shutil.rmtree(compression_path)
+            # shutil.rmtree(dynamics_data_path)
 
             # increment the file index
             file_index += 1

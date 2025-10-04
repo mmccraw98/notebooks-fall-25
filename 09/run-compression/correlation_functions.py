@@ -26,6 +26,49 @@ def _hist_pairs_pbc(pos, Lx, Ly, edges):
                 counts[k] += 1
     return counts
 
+@njit(cache=True, fastmath=True)
+def _hist_pairs_pbc_delta_weighted(pos, delta, Lx, Ly, edges):
+    n = pos.shape[0]
+    nb = edges.shape[0] - 1
+    counts = np.zeros(nb, dtype=np.int64)
+    rmax = edges[-1]
+    for i in range(n - 1):
+        xi = pos[i, 0]
+        yi = pos[i, 1]
+        delta_i = delta[i]
+        for j in range(i + 1, n):
+            dx = xi - pos[j, 0]
+            dy = yi - pos[j, 1]
+            dx -= Lx * np.round(dx / Lx)
+            dy -= Ly * np.round(dy / Ly)
+            r = (dx * dx + dy * dy) ** 0.5
+            if r <= 0.0 or r >= rmax:
+                continue
+            k = np.searchsorted(edges, r) - 1
+            if 0 <= k < nb:
+                counts[k] += delta_i * delta[j]
+    return counts
+
+@njit(cache=True, fastmath=True)
+def _count_pairs_pbc_delta(pos, delta, Lx, Ly, cutoff):
+    n = pos.shape[0]
+    count = 0
+    corr = 0
+    for i in range(n - 1):
+        xi = pos[i, 0]
+        yi = pos[i, 1]
+        delta_i = delta[i]
+        for j in range(i + 1, n):
+            dx = xi - pos[j, 0]
+            dy = yi - pos[j, 1]
+            dx -= Lx * np.round(dx / Lx)
+            dy -= Ly * np.round(dy / Ly)
+            r = (dx * dx + dy * dy) ** 0.5
+            if r <= cutoff:
+                count += 1
+                corr += delta_i * delta[j]
+    return corr / count
+
 def embed_anbles(angle, angular_period, mask=None):
     if mask is None:
         mask = angular_period > 0
@@ -54,6 +97,14 @@ def msd_kernel(indices, get_frame, system_id, system_size, system_offset):
     dr = r1 - r0
     dr -= (np.add.reduceat(dr, system_offset[:-1], axis=0) / system_size[:, None])[system_id]  # subtract off the mean drift of each system
     return np.bincount(system_id, weights=np.sum(dr ** 2, axis=-1)) / system_size
+
+@requires_fields("angle")
+def msad_kernel(indices, get_frame, system_id, system_size, system_offset):
+    t0, t1 = indices
+    theta0 = get_frame(t0)['angle']
+    theta1 = get_frame(t1)['angle']
+    dtheta = (theta1 - theta0)
+    return np.bincount(system_id, weights=dtheta ** 2) / system_size
 
 @requires_fields("pos", "angle")
 def fused_msd_kernel(indices, get_frame, system_id, system_size, system_offset):
@@ -138,6 +189,76 @@ def pair_correlation_function_kernel(indices, get_frame, system_id, box_size, ra
         g_values.append(g_local)
     return np.asarray(g_values)
 
+@requires_fields("pos", "angle")
+def angle_simple_pair_correlation_function_kernel(indices, get_frame, system_id, box_size, rad, cutoff_factor):
+    t0, t1 = indices
+    pos_0 = get_frame(t0)['pos']
+    angle_0 = get_frame(t0)['angle']
+    angle_1 = get_frame(t1)['angle']
+    delta = angle_1 - angle_0
+    corr = []
+    for sid in np.unique(system_id):
+        Lx, Ly = float(box_size[sid, 0]), float(box_size[sid, 1])
+        idx_s = (system_id == sid)
+        r_s = rad[idx_s]
+        p_sys = pos_0[idx_s]
+        delta_s = delta[idx_s]
+        corr_local = []
+        for val in np.unique(r_s):
+            f = (r_s == val)
+            p = np.ascontiguousarray(p_sys[f], dtype=np.float64)
+            d = np.ascontiguousarray(delta_s[f], dtype=np.float64)
+            n = p.shape[0]
+            cutoff = cutoff_factor * 2 * val
+            counts = _count_pairs_pbc_delta(p, d, Lx, Ly, cutoff)
+            corr_local.append(counts)
+        corr.append(np.asarray(corr_local))
+    return np.asarray(corr)
+
+@requires_fields("pos", "angle")
+def angle_pair_correlation_function_kernel(indices, get_frame, system_id, box_size, rad, bins):
+    t0, t1 = indices
+    pos_0 = get_frame(t0)['pos']
+    angle_0 = get_frame(t0)['angle']
+    angle_1 = get_frame(t1)['angle']
+    delta = angle_1 - angle_0
+    # Expect bin edges for reproducibility/speed; if an int is given, build global edges.
+    if np.isscalar(bins):
+        # Use global r_max = min(Lx, Ly)/2 across systems so edges are consistent
+        rmax = float(np.min(np.min(box_size, axis=1) / 2.0))
+        edges = np.linspace(0.0, rmax, int(bins) + 1, dtype=np.float64)
+    else:
+        edges = np.asarray(bins, dtype=np.float64)
+    nb = edges.size - 1
+    shell_area = np.pi * (edges[1:]**2 - edges[:-1]**2)
+
+    # compute the pair correlation function, but:
+    # weight each pair by the product of their angular displacement
+    # this measures the spatial extent and lifetime of a pairwise cooperative angular motion
+    g_delta_values = []
+    for sid in np.unique(system_id):
+        Lx, Ly = float(box_size[sid, 0]), float(box_size[sid, 1])
+        area = Lx * Ly
+        idx_s = (system_id == sid)
+        r_s = rad[idx_s]
+        p_sys = pos_0[idx_s]
+        delta_s = delta[idx_s]
+        g_delta_local = []
+        for val in np.unique(r_s):
+            f = (r_s == val)
+            p = np.ascontiguousarray(p_sys[f], dtype=np.float64)
+            d = np.ascontiguousarray(delta_s[f], dtype=np.float64)
+            n = p.shape[0]
+            if n < 2:
+                g_delta_local.append(np.zeros(nb, dtype=np.float64))
+                continue
+            counts = _hist_pairs_pbc_delta_weighted(p, d, Lx, Ly, edges).astype(np.float64)
+            counts *= 2.0  # convert i<j counts to ordered-pair counts to match your normalization
+            norm = shell_area * (n * (n - 1)) / area
+            g_delta_local.append(counts / norm)
+        g_delta_values.append(g_delta_local)
+    return np.asarray(g_delta_values)
+
 def compute_pair_correlation_function(data, radial_bins=None, save_path=None, overwrite=False):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['G'], np.load(save_path)['r']
@@ -150,6 +271,28 @@ def compute_pair_correlation_function(data, radial_bins=None, save_path=None, ov
     if save_path is not None:
         np.savez(save_path, G=G, r=r)
     return G, r
+
+def compute_angle_pair_correlation_function(data, radial_bins=None, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['G_delta'], np.load(save_path)['r'], np.load(save_path)['t']
+    if radial_bins is None:
+        radial_bins = np.linspace(0.5, 3, 1000)
+    bins = LagBinsPseudoLog.from_source(data.trajectory)
+    res = run_binned(angle_pair_correlation_function_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'box_size': data.box_size, 'rad': data.rad, 'bins': radial_bins}, show_progress=True, n_workers=20)
+    r = (radial_bins[1:] + radial_bins[:-1]) / 2
+    if save_path is not None:
+        np.savez(save_path, G_delta=res.mean, r=r, t=bins.values())
+    return res.mean, r, bins.values()
+
+def compute_angle_simple_pair_correlation_function(data, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['G_delta'], np.load(save_path)['t']
+    bins = LagBinsPseudoLog.from_source(data.trajectory)
+    res = run_binned(angle_simple_pair_correlation_function_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'box_size': data.box_size, 'rad': data.rad, 'cutoff_factor': 1.5}, show_progress=True, n_workers=20)
+    norm = run_binned(msad_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset}, show_progress=True, n_workers=20)
+    if save_path is not None:
+        np.savez(save_path, G_delta=res.mean / norm.mean[..., None], t=bins.values())
+    return res.mean / norm.mean[..., None], bins.values()
 
 def compute_vacf(data, save_path=None, overwrite=False):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
