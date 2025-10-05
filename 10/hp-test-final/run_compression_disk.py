@@ -1,35 +1,33 @@
+from statistics import correlation
 import pydpmd as md
 import numpy as np
 import os
 from system_building_resources import *
 import time
 import shutil
-from correlation_functions import compute_shear_modulus
+from correlation_functions import compute_msd, compute_pair_correlation_function
 
 if __name__ == "__main__":
-    for i in range(1):
-        root = f"/home/mmccraw/dev/data/10-02-25/disk-shear-modulus-large/trial-{i}/"  # run again at 1k particles
+    n_steps_base = 1e7
+    save_freq_base = 1e4
+    temp_base = 1e-6
+
+    radii = generate_bidisperse_radii(100, 0.5, 1.4)
+    which = 'small'
+    packing_fraction = 0.73
+    phi_increment = 1e-2
+    packing_fraction_target = 0.85
+    dt = 5e-2
+
+    for temp in [1e-4, 1e-5, 1e-6]:
+        root = f"/home/mmccraw/dev/data/10-03-25/disk_compression_T_{temp:.3e}/"
         if not os.path.exists(root):
             os.makedirs(root)
 
-        radii = generate_bidisperse_radii(1000, 0.5, 1.4)
-        which = 'small'
-        packing_fraction = 0.8
-        phi_increment = 1e-3
-        temperature = 1e-6
-        n_steps = 1e5
-        save_freq = 1e0
-        pressure_target = 1e-3
-        packing_fraction_target = 0.85
-        dt = 2e-2
-
         # build the initial data and equilibrate it, ideally to a 0-overlap state
-
-        n_duplicates = 10
-        
         temp_path = tempfile.mkdtemp()
         # build the initial data and equilibrate it, ideally to a 0-overlap state
-        disk = join_systems([build_disk_system_from_radii(radii, which, packing_fraction, int(np.random.randint(0, 1e9))) for _ in range(n_duplicates)])
+        disk = build_disk_system_from_radii(radii, which, packing_fraction, int(np.random.randint(0, 1e9)))
         disk.set_neighbor_method(NeighborMethod.Cell)
         set_standard_cell_list_parameters(disk, 0.3)
         disk.save(temp_path)
@@ -53,9 +51,12 @@ if __name__ == "__main__":
             # compress the data, incrementing the packing fraction by phi_increment and maintaining the temperature
             disk = load(init_path, location=["final", "init"])
             shutil.rmtree(init_path)
+
+            n_steps = int(np.ceil(n_steps_base * np.sqrt(temp_base / temp) / 1e4) * 1e4)
+            save_freq = int(np.ceil(save_freq_base * np.sqrt(temp_base / temp) / 1e3) * 1e3)
             
             compression_path = os.path.join(root, f"compression_{file_index}")
-            disk.set_velocities(temperature, np.random.randint(0, 1e9))
+            disk.set_velocities(temp, np.random.randint(0, 1e9))
             disk.set_neighbor_method(NeighborMethod.Cell)
             set_standard_cell_list_parameters(disk, 0.3)
             disk.save(compression_path)
@@ -65,14 +66,14 @@ if __name__ == "__main__":
                 compression_path,
                 str(int(max(int(n_steps / 10), 1e3) / 2)),  # total number of steps - half are used for compression, the other half are used for equilibration
                 str(phi_increment),
-                str(temperature),
+                str(temp),
                 str(dt),
             ], check=True)
 
             # run nve dynamics from the output of the compression data
             disk = load(compression_path, location=["final", "init"])
             dynamics_data_path = os.path.join(root, f"dynamics_{file_index}")
-            disk.set_velocities(temperature, np.random.randint(0, 1e9))
+            disk.set_velocities(temp, np.random.randint(0, 1e9))
             disk.set_neighbor_method(NeighborMethod.Cell)
             set_standard_cell_list_parameters(disk, 0.3)
             disk.save(dynamics_data_path)
@@ -85,38 +86,52 @@ if __name__ == "__main__":
                 str(dt),
             ], check=True)
 
-            # # calculate the average overlap in each system
-            # disk = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
-            # overlap_path = os.path.join(root, f"overlap_{file_index}.npz")
+            disk = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
+            
+            # calculate the average overlap in each system
             # first column stores the overlap for vertex i, second column stores the number of overlaps for vertex i
-            # mean_overlaps = np.sum(  # sum over all frames
-            #     np.array(
-            #         [
-            #             np.add.reduceat(  # sum over all vertices within each system
-            #                 disk.trajectory[i].overlaps, disk.system_offset[:-1]
-            #             , axis=0)
-            #             for i in range(disk.trajectory.num_frames())
-            #         ]
-            # ), axis=0)
+            mean_overlaps = np.sum(  # sum over all frames
+                np.array(
+                    [
+                        np.add.reduceat(  # sum over all vertices within each system
+                            disk.trajectory[i].overlaps, disk.system_offset[:-1]
+                        , axis=0)
+                        for i in range(disk.trajectory.num_frames())
+                    ]
+            ), axis=0)
             # divide the total number of overlaps by the number of overlapping vertices
             # repeat for all systems
-            # mean_overlaps = mean_overlaps[:, 0] / mean_overlaps[:, 1]
-            # np.savez(
-            #     overlap_path,
-            #     overlap=mean_overlaps,
-            #     packing_fraction=disk.init.packing_fraction,
-            # )
+            mean_overlaps = mean_overlaps[:, 0] / mean_overlaps[:, 1]
+            # scale by the small particle diameter
+            dimless_overlaps = mean_overlaps / (2.0 * disk.rad[disk.system_offset[:-1]])
 
-            # calculate the shear modulus and save it with packing_fraction, and temperature
-            disk = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
-            shear_modulus_path = os.path.join(root, f"shear_modulus_{file_index}.npz")
-            shear_modulus, t = compute_shear_modulus(disk, None)
+            # calculate the average temperature in each system
+            mean_temp = np.mean([disk.trajectory[i].temperature for i in range(disk.trajectory.num_frames())], axis=0)
+
+            # calculate the average pressure in each system
+            mean_p = np.mean([disk.trajectory[i].pressure for i in range(disk.trajectory.num_frames())], axis=0)
+
+            # calculate the msd
+            msd, t = compute_msd(disk)
+
+            # calculate the pair correlation function
+            g, r = compute_pair_correlation_function(disk)
+
+            # save the data
+            correlation_path = dynamics_data_path.rstrip("/") + '_results.npz'
             np.savez(
-                shear_modulus_path,
-                shear_modulus=shear_modulus,
+                correlation_path,
+                overlap=mean_overlaps,
+                dimless_overlap=dimless_overlaps,
+                temp=mean_temp,
+                pressure=mean_p,
+                msd=msd,
                 t=t,
+                g=g,
+                r=r,
                 packing_fraction=disk.init.packing_fraction,
             )
+
 
             # load the data, split into separate systems, recombining only those that have a packing fraction less than the target
             disk = load(dynamics_data_path, location=["final", "init"], load_trajectory=True, load_full=False)
@@ -124,12 +139,6 @@ if __name__ == "__main__":
                 _ for i, _ in enumerate(split_systems(disk))
                 if disk.init.packing_fraction[i] < packing_fraction_target
             ]
-
-            # mean_pressure = 0.5 * np.mean([disk.trajectory[i].stress_tensor_total_x[:, 0] + disk.trajectory[i].stress_tensor_total_y[:, 0] for i in range(disk.trajectory.num_frames())], axis=0)
-            # remaining_systems = [
-            #     _ for i, _ in enumerate(split_systems(disk))
-            #     if mean_pressure[i] < pressure_target
-            # ]
             if len(remaining_systems) == 0:
                 break
             disk = join_systems(remaining_systems)
