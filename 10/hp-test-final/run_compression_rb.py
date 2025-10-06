@@ -83,6 +83,7 @@ if __name__ == "__main__":
                 shutil.rmtree(interm_path)
             merged.append(_rb)
         rb = join_systems(merged)
+        rb.save(init_path)
 
         # run the iterative compress-dynamics protocol
         file_index = 0
