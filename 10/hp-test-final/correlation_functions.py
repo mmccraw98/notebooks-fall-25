@@ -2,6 +2,7 @@ import numpy as np
 from pydpmd.data import load
 import os
 from numba import njit
+from scipy.special import j0
 from pydpmd.calc import run_binned, fused_msd_kernel, TimeBins, LagBinsExact, LagBinsLog, LagBinsLinear, LagBinsPseudoLog, requires_fields
 
 @njit(cache=True, fastmath=True)
@@ -45,6 +46,37 @@ def compute_generalized_pos(pos, angle, system_id, angular_period, box_size=None
     new_angle[mask] = angle[mask] * 2 * np.pi / angular_period[mask]
     new_angle[~mask] = 0
     return np.column_stack([pos / L, np.cos(new_angle), np.sin(new_angle)])
+
+@requires_fields("pos")
+def isf_kernel(indices, get_frame, system_id, system_size, system_offset, filters, ks):
+    t0, t1 = indices
+    r0 = get_frame(t0)['pos']
+    r1 = get_frame(t1)['pos']
+    dr = r1 - r0
+    dr -= (np.add.reduceat(dr, system_offset[:-1], axis=0) / system_size[:, None])[system_id]  # subtract off the mean drift of each system
+    dr = np.linalg.norm(dr, axis=1)
+    isf = []
+    for f, k in zip(filters, ks):
+        # average over all angles (reduces to a bessel function in the infinite limit)
+        sq = j0(k * dr[f])
+        # average over systems (extract the real part first)
+        filtered_system_size = np.bincount(system_id[f])
+        isf.append(np.bincount(system_id[f], weights=np.real(sq)) / filtered_system_size)
+    return np.array(isf)
+
+@requires_fields("angle")
+def angular_isf_kernel(indices, get_frame, system_id, filters, theta_0s):
+    t0, t1 = indices
+    theta0 = get_frame(t0)['angle']
+    theta1 = get_frame(t1)['angle']
+    dtheta = theta1 - theta0
+    angle_isf = []
+    for f, theta_0 in zip(filters, theta_0s):
+        # average over systems (extract the real part first)
+        filtered_system_size = np.bincount(system_id[f])
+        sq_theta = np.exp(1j * theta_0 * dtheta[f])
+        angle_isf.append(np.bincount(system_id[f], weights=np.real(sq_theta)) / filtered_system_size)
+    return np.array(angle_isf)
 
 @requires_fields("pos")
 def msd_kernel(indices, get_frame, system_id, system_size, system_offset):
@@ -196,3 +228,25 @@ def compute_shear_modulus(data, save_path=None, subtract_mean_stress=True, overw
     if save_path is not None:
         np.savez(save_path, shear_modulus=res.mean * area / np.mean(temp, axis=0), t=bins.values())
     return res.mean * area / np.mean(temp, axis=0), bins.values()
+
+def compute_isf(data, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['isf'], np.load(save_path)['t']
+    filters = [data.rad == r for r in np.unique(data.rad)]
+    ks = [2 * np.pi / (r * 2) for r in np.unique(data.rad)]
+    bins = LagBinsPseudoLog.from_source(data.trajectory)
+    res = run_binned(isf_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset, 'filters': filters, 'ks': ks}, show_progress=True, n_workers=10)
+    if save_path is not None:
+        np.savez(save_path, isf=res.mean, t=bins.values())
+    return res.mean, bins.values()
+
+def compute_angular_isf(data, save_path=None, overwrite=False):
+    if save_path is not None and os.path.exists(save_path) and not overwrite:
+        return np.load(save_path)['isf'], np.load(save_path)['t']
+    filters = [data.rad == r for r in np.unique(data.rad)]
+    theta_0s = [2 * np.pi / (2 * np.pi / n) for n in np.unique(data.n_vertices_per_particle)]
+    bins = LagBinsPseudoLog.from_source(data.trajectory)
+    res = run_binned(angular_isf_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'filters': filters, 'theta_0s': theta_0s}, show_progress=True, n_workers=10)
+    if save_path is not None:
+        np.savez(save_path, isf=res.mean, t=bins.values())
+    return res.mean, bins.values()

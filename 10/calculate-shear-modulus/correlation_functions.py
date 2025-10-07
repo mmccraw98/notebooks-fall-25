@@ -2,7 +2,8 @@ import numpy as np
 from pydpmd.data import load
 import os
 from numba import njit
-from pydpmd.calc import run_binned, fused_msd_kernel, TimeBins, LagBinsExact, LagBinsLog, LagBinsLinear, LagBinsPseudoLog, requires_fields
+from scipy.spatial import cKDTree
+from pydpmd.calc import run_binned, run_binned_ragged, fused_msd_kernel, TimeBins, LagBinsExact, LagBinsLog, LagBinsLinear, LagBinsPseudoLog, requires_fields
 
 @njit(cache=True, fastmath=True)
 def _hist_pairs_pbc(pos, Lx, Ly, edges):
@@ -138,48 +139,197 @@ def pair_correlation_function_kernel(indices, get_frame, system_id, box_size, ra
         g_values.append(g_local)
     return np.asarray(g_values)
 
-def compute_pair_correlation_function(data, radial_bins=None, save_path=None, overwrite=False):
+@requires_fields('angular_vel')
+def simple_angle_kernel(indices, get_frame, system_size, system_offset, neighbor_list_by_frame, neighbor_offset_by_frame):
+    t0, t1 = indices
+    w1 = get_frame(t1)['angular_vel']
+    neighbor_list = neighbor_list_by_frame[t0]
+    neighbor_offset = neighbor_offset_by_frame[t0]
+    num_neighbors = np.diff(neighbor_offset)
+    # average the angular velocity products over ALL neighbors at the time origin
+    numerator = np.add.reduceat(w1[neighbor_list[:, 0]] * w1[neighbor_list[:, 1]], neighbor_offset[:-1]) / num_neighbors
+    denominator = np.add.reduceat(w1 ** 2, system_offset[:-1]) / system_size
+    return numerator, denominator  # aggregate the numerator and denominator separately and then divide
+@requires_fields('angular_vel')
+def angle_kernel(indices, get_frame, system_size, system_offset, neighbor_list_by_frame, bin_ids_by_frame, n_bins, n_systems):
+    t0, t1 = indices
+    w1 = get_frame(t1)['angular_vel']
+    # average the angular velocity products for neighbors (at the time origin) in each bin
+    bin_ids = bin_ids_by_frame[t0]
+    neighbor_list = neighbor_list_by_frame[t0]
+    # sum products by bin_id
+    products = w1[neighbor_list[:, 0]] * w1[neighbor_list[:, 1]]
+    w_w_delta = np.bincount(bin_ids, weights=products, minlength=n_bins * n_systems).reshape(n_systems, n_bins)
+    delta = np.bincount(bin_ids, minlength=n_bins * n_systems).reshape(n_systems, n_bins)
+    return w_w_delta, delta
+@requires_fields('angular_vel')
+def angle_kernel_denominator(indices, get_frame, system_size, system_offset):
+    t0, t1 = indices
+    w1 = get_frame(t1)['angular_vel']
+    return np.add.reduceat(w1 ** 2, system_offset[:-1]) / system_size
+
+@requires_fields('angle')
+def simple_angle_disp_kernel(indices, get_frame, system_size, system_offset, neighbor_list_by_frame, neighbor_offset_by_frame):
+    t0, t1 = indices
+    dtheta = get_frame(t1)['angle'] - get_frame(t0)['angle']
+    neighbor_list = neighbor_list_by_frame[t0]
+    neighbor_offset = neighbor_offset_by_frame[t0]
+    num_neighbors = np.diff(neighbor_offset)
+    # average the angular velocity products over ALL neighbors at the time origin
+    numerator = np.add.reduceat(dtheta[neighbor_list[:, 0]] * dtheta[neighbor_list[:, 1]], neighbor_offset[:-1]) / num_neighbors
+    denominator = np.add.reduceat(dtheta ** 2, system_offset[:-1]) / system_size
+    return numerator, denominator  # aggregate the numerator and denominator separately and then divide
+@requires_fields('angle')
+def angle_disp_kernel(indices, get_frame, system_size, system_offset, neighbor_list_by_frame, bin_ids_by_frame, n_bins, n_systems):
+    t0, t1 = indices
+    dtheta = get_frame(t1)['angle'] - get_frame(t0)['angle']
+    # average the angular velocity products for neighbors (at the time origin) in each bin
+    bin_ids = bin_ids_by_frame[t0]
+    neighbor_list = neighbor_list_by_frame[t0]
+    # sum products by bin_id
+    products = dtheta[neighbor_list[:, 0]] * dtheta[neighbor_list[:, 1]]
+    w_w_delta = np.bincount(bin_ids, weights=products, minlength=n_bins * n_systems).reshape(n_systems, n_bins)
+    delta = np.bincount(bin_ids, minlength=n_bins * n_systems).reshape(n_systems, n_bins)
+    return w_w_delta, delta
+@requires_fields('angle')
+def angle_disp_kernel_denominator(indices, get_frame, system_size, system_offset):
+    t0, t1 = indices
+    dtheta = get_frame(t1)['angle'] - get_frame(t0)['angle']
+    return np.add.reduceat(dtheta ** 2, system_offset[:-1]) / system_size
+
+def nearest_neighbor_pairs(pos, box_size, rmax, unique_radius=None, radii=None):
+    tree = cKDTree(np.mod(pos, box_size), boxsize=box_size)
+    pairs = np.fromiter(tree.query_pairs(r=rmax), dtype=np.dtype([('i',np.int32),('j',np.int32)]))
+    i = pairs['i']
+    j = pairs['j']
+    if unique_radius is not None:
+        mask = (radii[i] == unique_radius) & (radii[j] == unique_radius)
+        i = i[mask]
+        j = j[mask]
+    return i, j
+
+@requires_fields('pos')
+def neighbor_list_kernel(indices, get_frame, system_id, box_size, radii, rmax, r_bins=None):
+    t0 = indices[0]
+    pos_all = get_frame(t0)['pos']
+    neighbor_list = []
+    neighbor_size = []
+    bin_ids = []
+    for sid in np.unique(system_id):
+        pos = pos_all[system_id == sid]
+        bs = box_size[sid]
+        r = radii[system_id == sid]
+        unique_r = np.min(r)
+        pairs_i, pairs_j = nearest_neighbor_pairs(pos, bs, rmax, unique_r, r)
+        neighbor_list.append(np.column_stack([pairs_i, pairs_j]))
+        neighbor_size.append(len(pairs_i))
+        if r_bins is not None:
+            dr = pos[pairs_i] - pos[pairs_j]
+            dr -= np.round(dr / bs) * bs
+            distances = np.linalg.norm(dr, axis=1)
+            bin_ids.append(np.digitize(distances, r_bins) + sid * len(r_bins))
+    if r_bins is not None:
+        return np.concatenate(neighbor_list), np.concatenate([[0], np.cumsum(neighbor_size)]), np.concatenate(bin_ids)
+    return np.concatenate(neighbor_list), np.concatenate([[0], np.cumsum(neighbor_size)])
+
+def compute_neighbor_list_for_all_frames(data, rmax, r_bins=None, n_workers=10):
+    bins = TimeBins.from_source(data.trajectory)
+    res = run_binned_ragged(
+        neighbor_list_kernel,
+        data.trajectory, bins,
+        kernel_kwargs={
+            'system_id': data.system_id,
+            'box_size': data.box_size,
+            'radii': data.rad,
+            'rmax': rmax,
+            'r_bins': r_bins
+        },
+        show_progress=True,
+        n_workers=n_workers
+    )
+    neighbor_list_by_frame = [_[0][0] for _ in res.results]
+    neighbor_offset_by_frame = [_[0][1] for _ in res.results]
+    if r_bins is not None:
+        bin_ids_by_frame = [_[0][2] for _ in res.results]
+        return neighbor_list_by_frame, neighbor_offset_by_frame, bin_ids_by_frame
+    return neighbor_list_by_frame, neighbor_offset_by_frame
+
+
+def compute_pair_correlation_function(data, radial_bins=None, save_path=None, overwrite=False, n_workers=20):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['G'], np.load(save_path)['r']
     if radial_bins is None:
         radial_bins = np.linspace(0.5, 3, 1000)
     bins = TimeBins.from_source(data.trajectory)
-    res = run_binned(pair_correlation_function_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'box_size': data.box_size, 'rad': data.rad, 'bins': radial_bins}, show_progress=True, n_workers=20)
+    res = run_binned(
+        pair_correlation_function_kernel,
+        data.trajectory,
+        bins,
+        kernel_kwargs={
+            'system_id': data.system_id,
+            'box_size': data.box_size,
+            'rad': data.rad,
+            'bins': radial_bins
+        },
+        show_progress=True,
+        n_workers=n_workers
+    )
     r = (radial_bins[1:] + radial_bins[:-1]) / 2
     G = np.mean(res.mean, axis=0)
     if save_path is not None:
         np.savez(save_path, G=G, r=r)
     return G, r
 
-def compute_vacf(data, save_path=None, overwrite=False):
+def compute_vacf(data, save_path=None, overwrite=False, n_workers=20):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['vacf'], np.load(save_path)['t']
     bins = LagBinsPseudoLog.from_source(data.trajectory)
-    res = run_binned(vacf_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size}, show_progress=True, n_workers=10)
+    res = run_binned(
+        vacf_kernel,
+        data.trajectory,
+        bins,
+        kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size},
+        show_progress=True,
+        n_workers=n_workers
+    )
     if save_path is not None:
         np.savez(save_path, vacf=res.mean, t=bins.values())
     return res.mean, bins.values()
 
 
-def compute_msd(data, save_path=None, overwrite=False):
+def compute_msd(data, save_path=None, overwrite=False, n_workers=20):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['msd'], np.load(save_path)['t']
     bins = LagBinsPseudoLog.from_source(data.trajectory)
-    res = run_binned(msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset}, show_progress=True, n_workers=10)
+    res = run_binned(
+        msd_kernel,
+        data.trajectory,
+        bins,
+        kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset},
+        show_progress=True,
+        n_workers=n_workers
+    )
     if save_path is not None:
         np.savez(save_path, msd=res.mean, t=bins.values())
     return res.mean, bins.values()
 
-def compute_rotational_msd(data, save_path=None, overwrite=False):
+def compute_rotational_msd(data, save_path=None, overwrite=False, n_workers=20):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['msd'], np.load(save_path)['t']
     bins = LagBinsPseudoLog.from_source(data.trajectory)
-    res = run_binned(fused_msd_kernel, data.trajectory, bins, kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset}, show_progress=True, n_workers=10)
+    res = run_binned(
+        fused_msd_kernel,
+        data.trajectory,
+        bins,
+        kernel_kwargs={'system_id': data.system_id, 'system_size': data.system_size, 'system_offset': data.system_offset},
+        show_progress=True,
+        n_workers=n_workers
+    )
     if save_path is not None:
         np.savez(save_path, msd=res.mean, t=bins.values())
     return res.mean, bins.values()
 
-def compute_shear_modulus(data, save_path=None, subtract_mean_stress=True, overwrite=False):
+def compute_shear_modulus(data, save_path=None, subtract_mean_stress=True, overwrite=False, n_workers=20):
     if save_path is not None and os.path.exists(save_path) and not overwrite:
         return np.load(save_path)['shear_modulus'], np.load(save_path)['t']
     temp = np.array([data.trajectory[i].temperature for i in range(data.trajectory.num_frames())])
@@ -192,7 +342,14 @@ def compute_shear_modulus(data, save_path=None, subtract_mean_stress=True, overw
     else:
         mean_stress = 0
     bins = LagBinsPseudoLog.from_source(data.trajectory)
-    res = run_binned(shear_modulus_kernel, data.trajectory, bins, kernel_kwargs={'stress_xy_mean': mean_stress}, show_progress=True, n_workers=10)
+    res = run_binned(
+        shear_modulus_kernel,
+        data.trajectory,
+        bins,
+        kernel_kwargs={'stress_xy_mean': mean_stress},
+        show_progress=True,
+        n_workers=n_workers
+    )
     if save_path is not None:
         np.savez(save_path, shear_modulus=res.mean * area / np.mean(temp, axis=0), t=bins.values())
     return res.mean * area / np.mean(temp, axis=0), bins.values()

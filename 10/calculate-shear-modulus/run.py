@@ -12,19 +12,20 @@ if __name__ == "__main__":
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small-lower-temp/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small-lower-temp-extra/trial-{i}/"
-        root = f"/home/mmccraw/dev/data/10-01-25/short-test/trial-{i}/"
+        # root = f"/home/mmccraw/dev/data/10-01-25/short-test/trial-{i}/"
+        root = f"/home/mmccraw/dev/data/10-01-25/short-test-2/trial-{i}/"
         if not os.path.exists(root):
             os.makedirs(root)
 
-        radii = generate_bidisperse_radii(100, 0.5, 1.4)
+        radii = generate_bidisperse_radii(1000, 0.5, 1.4)
         which = 'small'
         packing_fraction = 0.8
-        phi_increment = 1e-3
+        phi_increment = 1e-2
         temperature = 1e-6
         n_steps = 1e5
-        save_freq = 1e2
+        save_freq = 1e1
         pressure_target = 1e-3
-        packing_fraction_target = 0.9
+        packing_fraction_target = 0.85
         dt = 2e-2
 
         # build the initial data and equilibrate it, ideally to a 0-overlap state
