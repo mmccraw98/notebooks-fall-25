@@ -180,7 +180,7 @@ def simple_angle_disp_kernel(indices, get_frame, system_size, system_offset, nei
     denominator = np.add.reduceat(dtheta ** 2, system_offset[:-1]) / system_size
     return numerator, denominator  # aggregate the numerator and denominator separately and then divide
 @requires_fields('angle')
-def angle_disp_kernel(indices, get_frame, system_size, system_offset, neighbor_list_by_frame, bin_ids_by_frame, n_bins, n_systems):
+def angle_disp_kernel(indices, get_frame, neighbor_list_by_frame, bin_ids_by_frame, n_bins, n_systems):
     t0, t1 = indices
     dtheta = get_frame(t1)['angle'] - get_frame(t0)['angle']
     # average the angular velocity products for neighbors (at the time origin) in each bin
@@ -188,7 +188,8 @@ def angle_disp_kernel(indices, get_frame, system_size, system_offset, neighbor_l
     neighbor_list = neighbor_list_by_frame[t0]
     # sum products by bin_id
     products = dtheta[neighbor_list[:, 0]] * dtheta[neighbor_list[:, 1]]
-    w_w_delta = np.bincount(bin_ids, weights=products, minlength=n_bins * n_systems).reshape(n_systems, n_bins)
+    # only get neighbors with equal size radii
+    w_w_delta = np.bincount(bin_ids, products, minlength=n_bins * n_systems).reshape(n_systems, n_bins)
     delta = np.bincount(bin_ids, minlength=n_bins * n_systems).reshape(n_systems, n_bins)
     return w_w_delta, delta
 @requires_fields('angle')
@@ -197,30 +198,32 @@ def angle_disp_kernel_denominator(indices, get_frame, system_size, system_offset
     dtheta = get_frame(t1)['angle'] - get_frame(t0)['angle']
     return np.add.reduceat(dtheta ** 2, system_offset[:-1]) / system_size
 
-def nearest_neighbor_pairs(pos, box_size, rmax, unique_radius=None, radii=None):
+def nearest_neighbor_pairs(pos, box_size, rmax, target_rad=None, radii=None):
     tree = cKDTree(np.mod(pos, box_size), boxsize=box_size)
     pairs = np.fromiter(tree.query_pairs(r=rmax), dtype=np.dtype([('i',np.int32),('j',np.int32)]))
     i = pairs['i']
     j = pairs['j']
-    if unique_radius is not None:
-        mask = (radii[i] == unique_radius) & (radii[j] == unique_radius)
+    if target_rad is not None:
+        mask = (radii[i] == target_rad) & (radii[j] == target_rad)
         i = i[mask]
         j = j[mask]
     return i, j
 
 @requires_fields('pos')
-def neighbor_list_kernel(indices, get_frame, system_id, box_size, radii, rmax, r_bins=None):
+def neighbor_list_kernel(indices, get_frame, system_id, box_size, rmax, r_bins=None, target_rad=None, radii=None, sid=None):
     t0 = indices[0]
     pos_all = get_frame(t0)['pos']
     neighbor_list = []
     neighbor_size = []
     bin_ids = []
-    for sid in np.unique(system_id):
+    if sid is not None:
+        sids = [sid]
+    else:
+        sids = np.unique(system_id)
+    for sid in sids:
         pos = pos_all[system_id == sid]
         bs = box_size[sid]
-        r = radii[system_id == sid]
-        unique_r = np.min(r)
-        pairs_i, pairs_j = nearest_neighbor_pairs(pos, bs, rmax, unique_r, r)
+        pairs_i, pairs_j = nearest_neighbor_pairs(pos, bs, rmax, target_rad, radii)
         neighbor_list.append(np.column_stack([pairs_i, pairs_j]))
         neighbor_size.append(len(pairs_i))
         if r_bins is not None:
@@ -232,7 +235,7 @@ def neighbor_list_kernel(indices, get_frame, system_id, box_size, radii, rmax, r
         return np.concatenate(neighbor_list), np.concatenate([[0], np.cumsum(neighbor_size)]), np.concatenate(bin_ids)
     return np.concatenate(neighbor_list), np.concatenate([[0], np.cumsum(neighbor_size)])
 
-def compute_neighbor_list_for_all_frames(data, rmax, r_bins=None, n_workers=10):
+def compute_neighbor_list_for_all_frames(data, rmax, r_bins=None, target_rad=None, sid=None, n_workers=10):
     bins = TimeBins.from_source(data.trajectory)
     res = run_binned_ragged(
         neighbor_list_kernel,
@@ -240,9 +243,11 @@ def compute_neighbor_list_for_all_frames(data, rmax, r_bins=None, n_workers=10):
         kernel_kwargs={
             'system_id': data.system_id,
             'box_size': data.box_size,
-            'radii': data.rad,
             'rmax': rmax,
-            'r_bins': r_bins
+            'r_bins': r_bins,
+            'target_rad': target_rad,
+            'radii': data.rad,
+            'sid': sid
         },
         show_progress=True,
         n_workers=n_workers
