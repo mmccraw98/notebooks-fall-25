@@ -14,7 +14,8 @@ if __name__ == "__main__":
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small-lower-temp-extra/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/short-test/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/short-test-3/trial-{i}/"
-        root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range/trial-{i}/"
+        # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range/trial-{i}/"
+        root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range-2/trial-{i}/"
         if not os.path.exists(root):
             os.makedirs(root)
 
@@ -34,18 +35,18 @@ if __name__ == "__main__":
         nvs = []
 
         nvs = [
-            3, 3, 3, 3,
-            6, 6, 6, 6,
-            10, 10, 10, 10,
-            20, 20, 20, 20,
-            30, 30, 30, 30
+            3, 3, 3,
+            6, 6, 6,
+            10, 10, 10,
+            20, 20, 20,
+            30, 30, 30,
         ]
         mu_effs = [
-            0.15, 0.25, 0.75, 1.3,
-            0.15, 0.25, 0.75, 1.3,
-            0.15, 0.25, 0.75, 1.3,
-            0.15, 0.25, 0.35, 0.75,
-            0.15, 0.25, 0.35, 0.75
+            0.2, 0.3, 0.35,
+            0.55, 0.65, 0.85,
+            0.55, 0.65, 0.85,
+            0.45, 0.55, 0.65,
+            0.45, 0.55, 0.65,
         ]
         # for mu_eff in [0.01, 0.05, 0.1, 0.5, 1.0]:
         #     for nv in [3, 6, 10, 20, 30]:
