@@ -7,7 +7,7 @@ import shutil
 from correlation_functions import compute_shear_modulus
 
 if __name__ == "__main__":
-    for i in range(1):
+    for i in range(3):
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-final/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small-lower-temp/trial-{i}/"
@@ -15,7 +15,9 @@ if __name__ == "__main__":
         # root = f"/home/mmccraw/dev/data/10-01-25/short-test/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/short-test-3/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range/trial-{i}/"
-        root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range-2/trial-{i}/"
+        # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range-2/trial-{i}/"
+
+        root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-NEW-FORMULA-2/trial-{i}/"
         if not os.path.exists(root):
             os.makedirs(root)
 
@@ -28,31 +30,54 @@ if __name__ == "__main__":
         save_freq = 1e0
         pressure_target = 1e-3
         packing_fraction_target = 0.85
-        dt = 2e-2
+        dt = 1e-2
 
         # build the initial data and equilibrate it, ideally to a 0-overlap state
-        mu_effs = []
-        nvs = []
+        if i == 0:
+            mu_effs = []
+            nvs = []
+            for mu_eff in [0.01, 0.05, 0.1, 0.5, 1.0]:
+                for nv in [3, 6, 10, 20, 30]:
+                    mu_effs.append(mu_eff)
+                    nvs.append(nv)
 
-        nvs = [
-            3, 3, 3,
-            6, 6, 6,
-            10, 10, 10,
-            20, 20, 20,
-            30, 30, 30,
-        ]
-        mu_effs = [
-            0.2, 0.3, 0.35,
-            0.55, 0.65, 0.85,
-            0.55, 0.65, 0.85,
-            0.45, 0.55, 0.65,
-            0.45, 0.55, 0.65,
-        ]
-        # for mu_eff in [0.01, 0.05, 0.1, 0.5, 1.0]:
-        #     for nv in [3, 6, 10, 20, 30]:
-        #         mu_effs.append(mu_eff)
-        #         nvs.append(nv)
-        
+        elif i == 1:
+            nvs = [
+                3, 3, 3, 3,
+                6, 6, 6, 6,
+                10, 10, 10, 10,
+                20, 20, 20, 20,
+                30, 30, 30, 30,
+            ]
+            mu_effs = [
+                0.25, 0.45, 0.85, 1.2,
+                0.35, 0.45, 0.75, 1.2,
+                0.35, 0.45, 0.75, 1.2,
+                0.35, 0.75, 0.85, 1.2,
+                0.35, 0.75, 0.85, 1.2,
+            ]
+
+        elif i == 2:
+            nvs = [
+                3, 3, 3,
+                6, 6, 6,
+                10, 10, 10,
+                20, 20, 20,
+                30, 30, 30,
+            ]
+            mu_effs = [
+                0.2, 0.3, 0.35,
+                0.55, 0.65, 0.85,
+                0.55, 0.65, 0.85,
+                0.45, 0.55, 0.65,
+                0.45, 0.55, 0.65,
+            ]
+
+        else:
+            raise ValueError(f"Invalid index: {i}")
+
+        assert len(mu_effs) == len(nvs)
+
         n_duplicates = len(mu_effs)
         cap_nv = 3
         add_core = True
