@@ -7,7 +7,7 @@ import shutil
 from correlation_functions import compute_shear_modulus
 
 if __name__ == "__main__":
-    for i in range(3):
+    for i in range(4):
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-final/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-small-lower-temp/trial-{i}/"
@@ -16,6 +16,8 @@ if __name__ == "__main__":
         # root = f"/home/mmccraw/dev/data/10-01-25/short-test-3/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range/trial-{i}/"
         # root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-fine-range-2/trial-{i}/"
+
+        i = 3  # force this
 
         root = f"/home/mmccraw/dev/data/10-01-25/calculate-shear-modulus-NEW-FORMULA-2/trial-{i}/"
         if not os.path.exists(root):
@@ -71,6 +73,18 @@ if __name__ == "__main__":
                 0.55, 0.65, 0.85,
                 0.45, 0.55, 0.65,
                 0.45, 0.55, 0.65,
+            ]
+        
+        elif i == 3:
+            nvs = [
+                3, 3, 3,
+                6, 6, 6,
+                10, 10, 10,
+            ]
+            mu_effs = [
+                1.4, 1.5, 1.7,
+                1.4, 1.5, 1.7,
+                1.4, 1.5, 1.7,
             ]
 
         else:
@@ -236,3 +250,6 @@ if __name__ == "__main__":
 
             # increment the file index
             file_index += 1
+    
+    print(f"Done running {i}")
+    exit()
