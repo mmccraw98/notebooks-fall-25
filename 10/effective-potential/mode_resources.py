@@ -1,3 +1,7 @@
+import numpy as np
+import scipy as sp
+from tqdm import tqdm
+
 def is_force_rattler(bond_vectors, eps=1e-9):
     """
     Determine if a particle is a rattler based off its bond vectors (force or direction vectors) with neighbors
@@ -45,7 +49,7 @@ def get_rigid_bumpy_rattlers(pair_forces, pair_ids, pair_vertex_contacts, zc=4, 
         pair_vertex_contacts = pair_vertex_contacts[~rattler_mask]
         if check_forces:
             pair_forces = pair_forces[~rattler_mask]
-    return rattler_ids, np.unique(pair_ids[~rattler_mask])
+    return rattler_ids, np.unique(pair_ids)
 
 def get_disk_rattlers(pair_forces, pair_ids, zc=3, check_forces=False):
     """
@@ -80,7 +84,7 @@ def get_disk_rattlers(pair_forces, pair_ids, zc=3, check_forces=False):
         pair_ids = pair_ids[~rattler_mask]
         if check_forces:
             pair_forces = pair_forces[~rattler_mask]
-    return rattler_ids, np.unique(pair_ids[~rattler_mask])
+    return rattler_ids, np.unique(pair_ids)
 
 
 def get_dynamical_matrix_modes_for_rigid_bumpy(data, critical_rattler_contact_count=4, use_forces_for_rattler_check=True):
@@ -94,7 +98,7 @@ def get_dynamical_matrix_modes_for_rigid_bumpy(data, critical_rattler_contact_co
 
     H_list, M_list, vec_list, val_list, non_rattler_id_list = [], [], [], [], []
 
-    for sid in range(data.n_systems()):
+    for sid in tqdm(range(data.n_systems())):
         pid_0 = data.system_offset[sid]
         pid_N = data.system_offset[sid + 1]
         N = data.system_size[sid]
@@ -115,27 +119,33 @@ def get_dynamical_matrix_modes_for_rigid_bumpy(data, critical_rattler_contact_co
 
         # calculate hessian for non-rattlers
         N = non_rattler_ids.size
-        H = np.zeros((N, N, hess_dim, hess_dim))
-        for pair_id, (i, j) in enumerate(local_pair_ids):
-            if i in rattler_ids or j in rattler_ids:
-                continue
-            i = np.where(non_rattler_ids == i)[0][0]
-            j = np.where(non_rattler_ids == j)[0][0]
-            for a, hessian_row in enumerate(hessian_block):
-                for b, hessian_term in enumerate(hessian_row):
-                    # diagonal term
-                    H[i, i, a, b] += hessian_term[mask][pair_id, 0]
-                    # off-diagonal term
-                    H[i, j, a, b] += hessian_term[mask][pair_id, 1]
+        if N == 0:
+            H = []
+            M = []
+            vals = []
+            vecs = []
+        else:
+            H = np.zeros((N, N, hess_dim, hess_dim))
+            for pair_id, (i, j) in enumerate(local_pair_ids):
+                if i in rattler_ids or j in rattler_ids:
+                    continue
+                i = np.where(non_rattler_ids == i)[0][0]
+                j = np.where(non_rattler_ids == j)[0][0]
+                for a, hessian_row in enumerate(hessian_block):
+                    for b, hessian_term in enumerate(hessian_row):
+                        # diagonal term
+                        H[i, i, a, b] += hessian_term[mask][pair_id, 0]
+                        # off-diagonal term
+                        H[i, j, a, b] += hessian_term[mask][pair_id, 1]
 
-        H = H.transpose(2, 0, 3, 1).reshape(hess_dim * N, hess_dim * N)
-        M_diag = [data.mass[pid_0: pid_N], data.mass[pid_0: pid_N], data.moment_inertia[pid_0: pid_N]]
-        M = np.diag(np.concatenate([m[non_rattler_ids] for m in M_diag]))
+            H = H.transpose(2, 0, 3, 1).reshape(hess_dim * N, hess_dim * N)
+            M_diag = [data.mass[pid_0: pid_N], data.mass[pid_0: pid_N], data.moment_inertia[pid_0: pid_N]]
+            M = np.diag(np.concatenate([m[non_rattler_ids] for m in M_diag]))
 
-        # compute dynamical matrix modes
-        vals, vecs = sp.linalg.eigh(H, M)
+            # compute dynamical matrix modes
+            vals, vecs = sp.linalg.eigh(H, M)
 
-        assert np.allclose(H, H.T)
+            assert np.allclose(H, H.T)
 
         H_list.append(H)
         M_list.append(M)
@@ -174,27 +184,33 @@ def get_dynamical_matrix_modes_for_disk(data, critical_rattler_contact_count=3, 
 
         # calculate hessian for non-rattlers
         N = non_rattler_ids.size
-        H = np.zeros((N, N, hess_dim, hess_dim))
-        for pair_id, (i, j) in enumerate(local_pair_ids):
-            if i in rattler_ids or j in rattler_ids:
-                continue
-            i = np.where(non_rattler_ids == i)[0][0]
-            j = np.where(non_rattler_ids == j)[0][0]
-            for a, hessian_row in enumerate(hessian_block):
-                for b, hessian_term in enumerate(hessian_row):
-                    # diagonal term
-                    H[i, i, a, b] += hessian_term[mask][pair_id, 0]
-                    # off-diagonal term
-                    H[i, j, a, b] += hessian_term[mask][pair_id, 1]
+        if N == 0:
+            H = []
+            M = []
+            vals = []
+            vecs = []
+        else:
+            H = np.zeros((N, N, hess_dim, hess_dim))
+            for pair_id, (i, j) in enumerate(local_pair_ids):
+                if i in rattler_ids or j in rattler_ids:
+                    continue
+                i = np.where(non_rattler_ids == i)[0][0]
+                j = np.where(non_rattler_ids == j)[0][0]
+                for a, hessian_row in enumerate(hessian_block):
+                    for b, hessian_term in enumerate(hessian_row):
+                        # diagonal term
+                        H[i, i, a, b] += hessian_term[mask][pair_id, 0]
+                        # off-diagonal term
+                        H[i, j, a, b] += hessian_term[mask][pair_id, 1]
 
-        H = H.transpose(2, 0, 3, 1).reshape(hess_dim * N, hess_dim * N)
-        M_diag = [data.mass[pid_0: pid_N], data.mass[pid_0: pid_N]]
-        M = np.diag(np.concatenate([m[non_rattler_ids] for m in M_diag]))
+            H = H.transpose(2, 0, 3, 1).reshape(hess_dim * N, hess_dim * N)
+            M_diag = [data.mass[pid_0: pid_N], data.mass[pid_0: pid_N]]
+            M = np.diag(np.concatenate([m[non_rattler_ids] for m in M_diag]))
 
-        # compute dynamical matrix modes
-        vals, vecs = sp.linalg.eigh(H, M)
+            # compute dynamical matrix modes
+            vals, vecs = sp.linalg.eigh(H, M)
 
-        assert np.allclose(H, H.T)
+            assert np.allclose(H, H.T)
 
         H_list.append(H)
         M_list.append(M)
