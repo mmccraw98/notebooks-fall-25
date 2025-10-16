@@ -112,7 +112,8 @@ def get_dynamical_matrix_modes_for_rigid_bumpy(data, critical_rattler_contact_co
         rattler_ids, non_rattler_ids = get_rigid_bumpy_rattlers(
             data.final.pair_forces[mask].copy(),
             local_pair_ids.copy(),
-            data.final.pair_vertex_contacts[mask, 0].copy(),
+            # data.final.pair_vertex_contacts[mask, 0].copy(),  # TODO: this MAY be max of both contacts!
+            np.max(data.final.pair_vertex_contacts[mask].copy(), axis=1),  # TODO: this MAY be max of both contacts!
             critical_rattler_contact_count,
             check_forces=use_forces_for_rattler_check
         )
@@ -127,10 +128,14 @@ def get_dynamical_matrix_modes_for_rigid_bumpy(data, critical_rattler_contact_co
         else:
             H = np.zeros((N, N, hess_dim, hess_dim))
             for pair_id, (i, j) in enumerate(local_pair_ids):
-                if i in rattler_ids or j in rattler_ids:
+                if i not in non_rattler_ids or j not in non_rattler_ids:
                     continue
-                i = np.where(non_rattler_ids == i)[0][0]
-                j = np.where(non_rattler_ids == j)[0][0]
+                try:
+                    i = np.where(non_rattler_ids == i)[0][0]
+                    j = np.where(non_rattler_ids == j)[0][0]
+                except:
+                    print(non_rattler_ids.size, j, j in non_rattler_ids)
+                    raise ValueError("ASDASDASDA")
                 for a, hessian_row in enumerate(hessian_block):
                     for b, hessian_term in enumerate(hessian_row):
                         # diagonal term
