@@ -223,3 +223,61 @@ def get_dynamical_matrix_modes_for_disk(data, critical_rattler_contact_count=3, 
         vec_list.append(vecs)
         non_rattler_id_list.append(non_rattler_ids)
     return H_list, M_list, val_list, vec_list, non_rattler_id_list
+
+
+def get_eimask(_vals, eps=1e-12):
+    vals = np.abs(_vals.copy())
+    order = np.argsort(vals)
+    vals = vals[order]
+    min_val = max(vals[np.argmax(vals[1:] / vals[:-1])], vals[-1] * eps)
+    return vals > min_val
+
+def get_S_modes_from_matrices(M, C, V):
+    # approach:
+    # use the eigenvectors of C to compute the non-null space
+    # project C, V, and K into the non-null space
+    # form the matrix S = V C^{-1}
+    # compare S and its eigendecomposition to that of M^{-1} K in the full space
+    # evaluates the relationship: V C^{-1} = M^{-1} K
+
+    # eigendecompose C
+    # Pc, Yc = np.linalg.eigh(C @ M)
+    # this causes issues because the eigenvectors in eigh are orthogonalized in the euclidean sense
+    # when they need to be M orthogonal
+    # we have to take this stupid roundabout approach:
+    Msqrt = M ** 0.5
+    Pc, Zc = np.linalg.eigh(Msqrt @ C @ Msqrt)
+    Yc = np.linalg.inv(Msqrt) @ Zc
+
+    # note that it is equivalent to the eigenproblem we are interested in: CM y = p y
+    # y = M^-1/2 z
+    # M^1/2 C M^1/2 z = p z
+    # z = M^1/2 y
+    # M^1/2 C M^1/2 M^1/2 y = p M^1/2 y
+    # C M y = p y
+    mask = get_eimask(Pc)
+    Pc = Pc[mask]
+    Yc = Yc[:, mask]
+
+    # verify algebraic properties
+    # assert np.allclose(Yc.T @ M @ Yc, np.eye(Yc.shape[1]))  # Y^T M Y = I
+    # proj = Yc @ Yc.T @ M  # P = Y Y^T M  - projector
+    # assert np.allclose(proj @ Yc, Yc)  # P y = Y Y^T M y = Y \delta_y = y
+
+    # project relevant matrices into the subspace formed by C
+    Cc = Yc.T @ M @ C @ M @ Yc  # diag(p_i)
+    Vc = Yc.T @ M @ V @ M @ Yc  # diag(p_i w_i²)
+    # Kc = Yc.T @ K @ Yc
+    # Mc = Yc.T @ M @ Yc
+
+    # assert np.allclose(Mc, np.eye(sum(mask)))  # in the subspace, everything is unweighted by mass, M == I
+
+    # eigendecompose the S matrix by inverting C in the subspace of K - it should be stable!
+    Sc = Vc @ np.linalg.inv(Cc)
+    Lsc, Ysc = np.linalg.eigh(Sc)
+
+    # lift Yc back to the full space
+    Ysc_full = Yc @ Ysc
+    # assert np.allclose(Ysc_full.T @ M @ Ysc_full, np.eye(sum(mask)))  # check Ysc^T M Ysc = I if Ys are truly ei-vecs of K, M
+
+    return Lsc, Ysc_full, Sc
