@@ -243,6 +243,115 @@ def build_rigid_bumpy_system_from_radii(radii: np.ndarray, which: str, mu_eff: f
 
     return join_systems(rbs)
 
+def build_rigid_bumpy_system_from_radii_NEW(radii: np.ndarray, which: str, mu_eff: float | list[float], nv: int | list[int], packing_fraction: float, add_core: bool | str = False, cap_nv: float = np.inf, inertia_assignment: str = 'points', n_duplicates: int = 1, draw_figures: bool = False):
+    if not isinstance(mu_eff, list):
+        mu_eff = [mu_eff] * n_duplicates
+    if not isinstance(nv, list):
+        nv = [nv] * n_duplicates
+    if len(mu_eff) != n_duplicates:
+        raise ValueError(f"mu_eff must be a list of length {n_duplicates}")
+    if len(nv) != n_duplicates:
+        raise ValueError(f"nv must be a list of length {n_duplicates}")
+    if inertia_assignment not in ['points', 'uniform']:
+        raise ValueError(f"inertia_assignment must be one of 'points', 'uniform'")
+
+    temp_path = tempfile.mkdtemp()
+    # build the initial data and equilibrate it, ideally to a 0-overlap state
+    disk = join_systems([build_disk_system_from_radii(radii, which, packing_fraction, int(np.random.randint(0, 1e9))) for _ in range(n_duplicates)])
+    disk.set_neighbor_method(NeighborMethod.Cell)
+    set_standard_cell_list_parameters(disk, 0.3)
+    disk.save(temp_path)
+    subprocess.run([
+        os.path.join("/home/mmccraw/dev/dpmd/build/", "disk_equilibrate_pbc"),
+        temp_path,
+        temp_path,
+    ], check=True)
+
+    disk = load(temp_path, location=["final", "init"])
+    shutil.rmtree(temp_path)
+    rbs = []
+    for i, disk in enumerate(split_systems(disk)):
+        pos = disk.pos.copy()
+        radii = disk.rad.copy()
+        box_size = disk.box_size.copy()
+
+        min_nv = 2 if mu_eff[i] > 0 else 1
+        max_nv = nv[i] * cap_nv
+        nv_trial = np.arange(min_nv, max_nv)
+
+        # define units
+        particle_radius = 0.5
+        particle_mass = 1.0
+        e_interaction = 1.0
+
+        if which == 'avg':  # set the average radii to particle_radius if not already
+            radii = radii / np.mean(radii) * particle_radius
+        elif which == 'small':  # set the small radii to particle_radius, preserve relative scales
+            radii = radii / np.min(radii) * particle_radius
+        else:
+            raise NotImplementedError(f'which: "{which}" not handled')
+
+        n_vertices_per_particle = np.ones_like(radii).astype(DT_INT)
+        if mu_eff[i] > 0:
+            target_particle_id = np.argmin(np.abs(radii - particle_radius))
+            vertex_radius = get_closest_vertex_radius_for_mu_eff(mu_eff[i], radii[target_particle_id], nv[i])
+            for rad in np.unique(radii):
+                mask = radii == rad
+                diffs = np.abs(calc_mu_eff(vertex_radius, rad, nv_trial) - mu_eff[i])
+                n_vertices_per_particle[mask] = nv_trial[~np.isnan(diffs)][np.argmin(diffs[~np.isnan(diffs)])]
+
+        # initial construction
+        rb = RigidBumpy()
+        if isinstance(add_core, str) and add_core == 'selective':
+            _add_core = (mu_eff[i] >= 1) or (mu_eff[i] >= 0.5 and nv[i] >= 20)
+        else:
+            _add_core = add_core
+        rb.using_core = _add_core and mu_eff[i] > 0
+        if rb.using_core:
+            n_vertices_per_particle[n_vertices_per_particle > 1] += 1
+        rb.allocate_particles(n_vertices_per_particle.size)
+        rb.allocate_systems(1)
+        rb.allocate_vertices(n_vertices_per_particle.sum())
+        rb.n_vertices_per_particle = n_vertices_per_particle.astype(DT_INT)
+        rb.set_ids()
+        rb.validate()
+
+        # assign values from the equilibrated disks
+        rb.box_size = box_size.astype(DT_FLOAT).copy()
+        rb.set_positions(1, int(np.random.randint(0, 1e9)))  # basically done just to assign random angles
+        rb.pos = pos.astype(DT_FLOAT).copy()  # overwrite the random positions with the disk positions
+        rb.rad = radii.astype(DT_FLOAT).copy()
+        rb.mass.fill(particle_mass)
+        rb.e_interaction.fill(e_interaction)
+        rb.calculate_uniform_vertex_mass()
+
+        # assign vertex radii, handling all the edge cases (single vertex, multi-vertex with/without cores)
+        single_vertex_mask = rb.n_vertices_per_particle == 1
+        multi_vertex_mask = ~single_vertex_mask
+        if np.any(single_vertex_mask):  # set the vertex radius to the particle radius for single vertex particles
+            rb.vertex_rad[single_vertex_mask[rb.vertex_particle_id]] = rb.rad[single_vertex_mask]
+        if np.any(multi_vertex_mask):
+            rb.vertex_rad[multi_vertex_mask[rb.vertex_particle_id]] = vertex_radius  # every vertex has the same radius
+            if rb.using_core:  # assign the core radius as the inner radius (outer radius - vertex radius)
+                rb.vertex_rad[rb.particle_offset[1:][multi_vertex_mask] - 1] = rb.rad[multi_vertex_mask] - rb.vertex_rad[rb.particle_offset[:-1][multi_vertex_mask]]
+
+        # assign the particle positions
+        rb.set_vertices_on_particles_as_disk()
+        if inertia_assignment == 'points':
+            rb.calculate_inertia()
+        elif inertia_assignment == 'uniform':
+            rb.calculate_inertia_uniform_mass_distribution()
+        else:
+            raise ValueError(f"inertia_assignment must be one of 'points', 'uniform'")
+        rb.calculate_packing_fraction()
+        rbs.append(rb)
+        if draw_figures:
+            draw_particles_frame(None, plt.gca(), rb, system_id=0, which='vertex', cmap_name='viridis', location=None)
+            plt.savefig(f'figures/test_{nv[i]}_{mu_eff[i]}.png')
+            plt.close()
+
+    return join_systems(rbs)
+
 def set_standard_cell_list_parameters(particle: BaseParticle, alpha: float = 0.3):
     """
     Set the standard cell list parameters for a particle system.
