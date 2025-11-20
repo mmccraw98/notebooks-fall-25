@@ -164,4 +164,6 @@ secrets.json
 # Exclude everything in /test-dp3
 /test-dp3/
 
+# Large clustering artifacts
+11/generate-clusters/*.npy
 
