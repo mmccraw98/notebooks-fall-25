@@ -13,7 +13,7 @@ import numpy as np
 
 if __name__ == "__main__":
     N = 100
-    dim = 3
+    dim = 2
     e_int = 1.0
     dt = 1e-2
     phi = 0.4
