@@ -8,6 +8,7 @@ import jaxdem.utils as utils
 import numpy as np
 import matplotlib.pyplot as plt
 import subprocess
+from pathlib import Path
 
 def make_grid_state(n_per_axis, dim, jitter=0):
     radius = 0.5
@@ -25,12 +26,12 @@ def make_grid_state(n_per_axis, dim, jitter=0):
     return state, box_size
 
 def create_state(dt=0.001):
-    n_per_axis=10
+    n_per_axis=3
     dim=2
 
 
     sphere_state, box_size = make_grid_state(n_per_axis, dim, jitter=5e-1)
-    NV = 3
+    NV = 5
     ID = jnp.concatenate([np.ones(NV) * i for i in sphere_state.ID]).astype(sphere_state.ID.dtype)
     _, nv = jnp.unique(ID, return_counts=True)
     local_id = jnp.arange(ID.size) - jnp.concatenate((jnp.zeros(1), jnp.cumsum(nv))).astype(sphere_state.ID.dtype)[ID]
@@ -98,8 +99,10 @@ with h5py.File('init_config.h5', 'w') as f:
     f.create_dataset("ID",  data=np.asarray(state.ID))
     f.create_dataset("box_size", data=np.asarray(system.domain.box_size))
 
+script_dir = Path(__file__).resolve().parent
+run_render = script_dir.parent / "rigid-particle-creation" / "run_render.sh"
 subprocess.run([
-    "/home/mmccraw/dev/analysis/fall-25/12/testing-jaxdem-scripts/rigid-particle-creation/run_render.sh",
+    str(run_render),
     "init_config.h5",
     "init_config_render.png",
     "1000",
@@ -125,8 +128,10 @@ with h5py.File('final_config.h5', 'w') as f:
     f.create_dataset("ID",  data=np.asarray(state.ID))
     f.create_dataset("box_size", data=np.asarray(system.domain.box_size))
 
+script_dir = Path(__file__).resolve().parent
+run_render = script_dir.parent / "rigid-particle-creation" / "run_render.sh"
 subprocess.run([
-    "/home/mmccraw/dev/analysis/fall-25/12/testing-jaxdem-scripts/rigid-particle-creation/run_render.sh",
+    str(run_render),
     "final_config.h5",
     "final_config_render.png",
     "1000",
