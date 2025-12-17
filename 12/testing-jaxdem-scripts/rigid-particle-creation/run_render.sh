@@ -54,7 +54,8 @@ fi
 # Headless Linux convenience:
 # - If we're on Linux AND DISPLAY is unset, try xvfb-run if available.
 # - On macOS (or any system with a working display), just run pvbatch directly.
-if [ "$(uname -s)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && command -v xvfb-run >/dev/null 2>&1; then
+# if [ "$(uname -s)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && command -v xvfb-run >/dev/null 2>&1; then
+if [ "$(uname -s)" = "Linux" ]; then
     echo "Headless Linux detected (DISPLAY unset). Using xvfb-run."
     xvfb-run -s "-screen 0 1600x1600x24" \
         "$PVBATCH" "${SCRIPT_DIR}/render.py" \
