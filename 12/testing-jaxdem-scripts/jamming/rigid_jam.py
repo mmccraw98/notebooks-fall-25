@@ -27,11 +27,11 @@ def make_grid_state(n_per_axis, dim, jitter=0):
 
 def create_state(dt=0.001):
     n_per_axis=3
-    dim=2
+    dim=3
 
 
     sphere_state, box_size = make_grid_state(n_per_axis, dim, jitter=5e-1)
-    NV = 5
+    NV = 2
     ID = jnp.concatenate([np.ones(NV) * i for i in sphere_state.ID]).astype(sphere_state.ID.dtype)
     _, nv = jnp.unique(ID, return_counts=True)
     local_id = jnp.arange(ID.size) - jnp.concatenate((jnp.zeros(1), jnp.cumsum(nv))).astype(sphere_state.ID.dtype)[ID]
@@ -39,7 +39,7 @@ def create_state(dt=0.001):
     orientation = 2 * np.pi * local_id / nv[ID] + random_angle[ID]
     pos_c = sphere_state.pos.copy()[ID]
     # rad = (sphere_state.rad / nv)[ID]
-    rad = (sphere_state.rad * 0.7)[ID]
+    rad = (sphere_state.rad * 0.6)[ID]
     mass = (sphere_state.mass / nv)[ID]
     if sphere_state.dim == 2:
         angles = jnp.column_stack((jnp.cos(orientation), jnp.sin(orientation)))
@@ -59,9 +59,9 @@ def create_state(dt=0.001):
     system = jdem.System.create(
         state.shape,
         dt=dt,
-        # collider_type="naive",
-        collider_type="celllist",
-        collider_kw=dict(state=state),
+        collider_type="naive",
+        # collider_type="celllist",
+        # collider_kw=dict(state=state),
         domain_type="periodic",
         # rotation_integrator_type="rotationgradientdescent",
         # rotation_integrator_kw=dict(learning_rate=1e-6),
@@ -108,7 +108,7 @@ subprocess.run([
     "1000",
 ], check=True)
 
-state, system, phi, pe = jdem.utils.bisection_jam(state, system, n_minimization_steps=1_000_000, )
+state, system, phi, pe = jdem.utils.bisection_jam(state, system, n_minimization_steps=1_000_00, n_jamming_steps=1_000_000, packing_fraction_increment=1e-4)
 print(phi, pe)
 
 import matplotlib.pyplot as plt
