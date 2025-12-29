@@ -84,11 +84,20 @@ def generate_asperities(asperity_radius, particle_radius, target_num_vertices, a
 def generate_mesh(asperity_positions, asperity_radii, subdivisions):
     meshes = []
     for a, r in zip(asperity_positions, asperity_radii):
-            m = trimesh.creation.icosphere(subdivisions=subdivisions, radius=r)
-            m.apply_translation(a)
-            meshes.append(m)
-    mesh = trimesh.util.concatenate(meshes)
-    # assert (mesh.is_winding_consistent & mesh.is_watertight)
+        m = trimesh.creation.icosphere(subdivisions=subdivisions, radius=float(r))
+        m.apply_translation(a)
+        meshes.append(m)
+    engines = getattr(trimesh.boolean, "engines_available", set())
+    if "manifold" in engines:
+        mesh = trimesh.boolean.union(meshes, engine="manifold")
+    elif None in engines:
+        mesh = trimesh.boolean.union(meshes, engine=None)
+    else:
+        raise RuntimeError(
+            "No trimesh boolean backend is available; can't union sphere meshes. "
+            "Install one (recommended: `pip install manifold3d`)."
+        )
+
     assert mesh.is_volume
     return mesh
 
@@ -100,17 +109,16 @@ def make_single_particle(asperity_radius, particle_radius, nv, aspect_ratio, add
         aspect_ratio=aspect_ratio,
         add_core=add_core
     )
-    # THIS IS SOMEHOW INCORRECT
-    # mesh = generate_mesh(
-    #     asperity_positions=asperity_positions,
-    #     asperity_radii=asperity_radii,
-    #     subdivisions=mesh_subdivisions
-    # )
+    mesh = generate_mesh(
+        asperity_positions=asperity_positions,
+        asperity_radii=asperity_radii,
+        subdivisions=mesh_subdivisions
+    )
     single_clump_state = jd.State.create(
         pos=asperity_positions + particle_center,
         rad=asperity_radii,
         ID=jnp.zeros(asperity_positions.shape[0]),
-        # volume=jnp.ones(asperity_positions.shape[0]) * mesh.volume
+        volume=jnp.ones(asperity_positions.shape[0]) * mesh.volume
     )
 
     mats = [jd.Material.create("elastic", young=1.0, poisson=0.5, density=0.5)]
@@ -127,7 +135,7 @@ def make_single_particle(asperity_radius, particle_radius, nv, aspect_ratio, add
 
 
 mass = 1.0
-asperity_radius = 0.4
+asperity_radius = 0.3
 particle_radius = 0.5
 nv = 5
 aspect_ratio = np.array([1.0, 1.0, 1.0])
@@ -142,12 +150,6 @@ size_ratios = [1.0, 1.4]
 
 small_radius = 0.5
 mesh_subdivisions = 5
-
-# THERE IS AN ERROR IN THE CALCULATION OF THE CLUMP VOLUME FROM THE MESH SOMEHOW
-
-# WHEN USING ROTATIONAL MINIMIZER IN 3D, THE JAMMING CODE STOPS WORKING
-
-# DOES THE JAMMING CODE LOOK AT THE DIFFERENCE BETWEEN PHI LOW AND PHI HIGH BEFORE STOPPING?
 
 # H5 WRITER AND LOADER
 
@@ -213,10 +215,10 @@ system = jd.System.create(
     state_shape=state.shape,
     dt=dt,
     # linear_integrator_type="verlet",
-    rotation_integrator_type="verletspiral",
+    # rotation_integrator_type="verletspiral",
     # rotation_integrator_type="rotationgradientdescent",
     linear_integrator_type="linearfire",
-    # rotation_integrator_type="rotationfire",
+    rotation_integrator_type="rotationfire",
     domain_type="periodic",
     force_model_type="spring",
     # collider_type="naive",
