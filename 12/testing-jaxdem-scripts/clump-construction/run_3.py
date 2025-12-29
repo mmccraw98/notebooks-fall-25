@@ -161,7 +161,8 @@ counts = np.round(N * count_ratios).astype(int)
 sizes = small_radius * size_ratios
 # print(sum(counts), N)  # must be equal
 # print(counts / N == count_ratios) # warn if not match
-nvs = np.ones_like(counts) * jnp.round(nv * size_ratios)  # TODO: make this such that the friction is constant across all shapes
+nvs = np.ones_like(counts) * nv  # TODO: make this such that the friction is constant across all shapes
+# nvs = np.ones_like(counts) * jnp.round(nv * size_ratios)
 print(nvs)
 assert np.all(sizes > 0)
 assert np.all(counts > 0)
@@ -228,7 +229,7 @@ system = jd.System.create(
 )
 
 
-state, system, phi, pe = jd.utils.bisection_jam(state, system, n_minimization_steps=1_000_00, n_jamming_steps=1_000_000, packing_fraction_increment=1e-3)
+state, system, phi, pe = jd.utils.bisection_jam(state, system, n_minimization_steps=1_000_00, n_jamming_steps=1_000_000, packing_fraction_increment=1e-2)
 
 import subprocess
 from pathlib import Path
