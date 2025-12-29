@@ -7,6 +7,8 @@ from jaxdem.utils import Quaternion
 import jax.numpy as jnp
 import jaxdem as jd
 
+jax.config.update("jax_enable_x64", True)
+
 def jax_copy(x):
     return jax.tree.map(lambda y: y, x)
 
@@ -159,8 +161,8 @@ counts = np.round(N * count_ratios).astype(int)
 sizes = small_radius * size_ratios
 # print(sum(counts), N)  # must be equal
 # print(counts / N == count_ratios) # warn if not match
-nvs = np.ones_like(counts) * nv  # TODO: make this such that the friction is constant across all shapes
-
+nvs = np.ones_like(counts) * jnp.round(nv * size_ratios)  # TODO: make this such that the friction is constant across all shapes
+print(nvs)
 assert np.all(sizes > 0)
 assert np.all(counts > 0)
 
@@ -216,9 +218,9 @@ system = jd.System.create(
     # rotation_integrator_type="rotationfire",
     domain_type="periodic",
     force_model_type="spring",
-    collider_type="naive",
-    # collider_type="celllist",
-    # collider_kw=dict(state=state),
+    # collider_type="naive",
+    collider_type="celllist",
+    collider_kw=dict(state=state),
     mat_table=mat_table,
     domain_kw=dict(
         box_size=box_size,
@@ -226,7 +228,7 @@ system = jd.System.create(
 )
 
 
-state, system, phi, pe = jd.utils.bisection_jam(state, system, n_minimization_steps=1_000_00, n_jamming_steps=1_000_000, packing_fraction_increment=1e-2)
+state, system, phi, pe = jd.utils.bisection_jam(state, system, n_minimization_steps=1_000_00, n_jamming_steps=1_000_000, packing_fraction_increment=1e-3)
 
 import subprocess
 from pathlib import Path

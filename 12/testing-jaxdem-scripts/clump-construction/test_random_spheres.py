@@ -6,6 +6,8 @@ import jax
 import jax.numpy as jnp
 import jaxdem as jd
 
+jax.config.update("jax_enable_x64", True)
+
 N = 50
 phi = 0.4
 dim = 2

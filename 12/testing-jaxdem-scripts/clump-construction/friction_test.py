@@ -7,6 +7,8 @@ from jaxdem.utils import Quaternion
 import jax.numpy as jnp
 import jaxdem as jd
 
+jax.config.update("jax_enable_x64", True)
+
 def jax_copy(x):
     """
     Make a *real* copy of a pytree containing JAX arrays.

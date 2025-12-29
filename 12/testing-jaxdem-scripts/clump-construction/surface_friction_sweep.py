@@ -36,6 +36,7 @@ import trimesh
 import jaxdem as jd
 from jaxdem.utils import Quaternion
 
+jax.config.update("jax_enable_x64", True)
 
 def num_trimesh_subdivisions(num_vertices: int) -> int:
     s = round(np.log10((num_vertices - 2) / 10) / np.log10(4))
