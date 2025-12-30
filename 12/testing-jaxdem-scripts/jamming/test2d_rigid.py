@@ -98,7 +98,7 @@ for j, dt in enumerate(dts):
         # collider_kw=dict(state=state),
         domain_type="periodic",
         linear_integrator_type="verlet",
-        rotation_integrator_type="spiral",
+        rotation_integrator_type="verletspiral",
         domain_kw=dict(
             box_size=10.0 * jnp.ones(state.dim), anchor=-5 * jnp.ones(state.dim)
         ),

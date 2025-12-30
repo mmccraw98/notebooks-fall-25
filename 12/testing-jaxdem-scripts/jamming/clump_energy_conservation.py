@@ -86,6 +86,7 @@ def create_state(n_per_axis, dt, dim):
         pos_p=pos_p,
         q=q,
         rad=rad,
+        volume=jnp.ones_like(rad),
         mass=mass,
         inertia=inertia,
         ID=ID,
@@ -167,7 +168,7 @@ for dt in dts:
     plt.plot(Ke_r, label="Ke_r")
     plt.legend()
     # plt.savefig("energy_conservation.png", dpi=400)
-    plt.show()
+    plt.close()
 
 
 from scipy.stats import linregress

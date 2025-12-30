@@ -90,11 +90,11 @@ def create_state(dt=0.001):
 
 
 E_std = []
-dts = 10 ** np.linspace(-4.5, -2.5, 6)
+dts = 10 ** np.linspace(-5, -2, 6)
 
 for dt in dts:
     # dt = 0.001
-    time = 1.0
+    time = 10.0
     frames = 200
     stride = int(time / dt) // frames
     state, system = create_state(dt)
@@ -132,8 +132,8 @@ for dt in dts:
     plt.plot(Ke_t, label="Ke_t")
     plt.plot(Ke_r, label="Ke_r")
     plt.legend()
-    # plt.savefig("energy_conservation.png", dpi=400)
-    plt.show()
+    plt.savefig(f"energy_conservation_{dt}.png", dpi=400)
+    plt.close()
 
 
 from scipy.stats import linregress

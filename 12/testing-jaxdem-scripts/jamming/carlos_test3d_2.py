@@ -66,17 +66,22 @@ def create_state(dt=0.001):
     )
     state = jdem.utils.compute_clump_properties(state, system.mat_table, n_samples=50_000)
 
+    true_mass = jnp.ones_like(state.mass) * 1.0
+    state.inertia *= (true_mass / state.mass)[..., None]
+    state.mass = true_mass
+    print(state.mass)
+
     return state, system
 
 # assign clump properties based on the total mass in the particle
 
 E_std = []
-dts = 10 ** np.linspace(-3, -1, 5)
+dts = 10 ** np.linspace(-4, -1, 5)
 dt_min = np.min(dts)
 
 for dt in dts:
     # dt = 0.001
-    n_steps = int(100000 * dt_min / dt)
+    n_steps = int(10000000 * dt_min / dt)
     save_stride = 100
     n_snapshots = n_steps // save_stride
 
