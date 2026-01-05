@@ -1,4 +1,4 @@
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 import jax
@@ -17,11 +17,47 @@ from shapely.ops import unary_union
 
 jax.config.update("jax_enable_x64", True)
 
-def jax_copy(x):
-    return jax.tree.map(lambda y: y, x)
+def duplicate_clump_template(template: jd.State, com_positions: jnp.ndarray) -> jd.State:
+    """
+    template: a single clump with Ns spheres (template.pos_c same for all spheres, template.ID same for all spheres)
+    com_positions: (M, dim) desired clump COM positions
+    returns: State with M clumps, total N = M*Ns spheres
+    """
+    com_positions = jnp.asarray(com_positions, dtype=float)
+    M, dim = com_positions.shape
+    Ns = template.N
+    assert dim == template.dim
 
-def calc_mu_eff(vertex_radius, outer_radius, num_vertices):
-    return 1 / jnp.sqrt(((2 * vertex_radius) / ((outer_radius - vertex_radius) * jnp.sin(jnp.pi / num_vertices))) ** 2 - 1)
+    # repeat template leaf shaped (Ns, ...) -> (M*Ns, ...)
+    def tile0(x):
+        x = jnp.asarray(x)
+        return jnp.broadcast_to(x, (M,) + x.shape).reshape((M * x.shape[0],) + x.shape[1:])
+
+    # clump COM per sphere
+    pos_c = jnp.repeat(com_positions, repeats=Ns, axis=0)  # (M*Ns, dim)
+
+    # unique clump ids 0..M-1, repeated for each sphere in the clump
+    ID = jnp.repeat(jnp.arange(M, dtype=int), repeats=Ns)  # (M*Ns,)
+
+    q = jd.utils.Quaternion(tile0(template.q.w), tile0(template.q.xyz))
+
+    return jd.State(
+        pos_c=pos_c,
+        pos_p=tile0(template.pos_p),
+        vel=tile0(template.vel),
+        force=tile0(template.force),
+        q=q,
+        angVel=tile0(template.angVel),
+        torque=tile0(template.torque),
+        rad=tile0(template.rad),
+        volume=tile0(template.volume),
+        mass=tile0(template.mass),
+        inertia=tile0(template.inertia),
+        ID=ID,
+        mat_id=tile0(template.mat_id),
+        species_id=tile0(template.species_id),
+        fixed=tile0(template.fixed),
+    )
 
 def generate_asperities_2d(
     asperity_radius: float,
@@ -140,61 +176,6 @@ def make_single_particle_2d(
 
     return single_clump_state
 
-def num_trimesh_subdivisions(num_vertices):
-    # count the number of subdisions to get a set number of vertices
-    s = round(jnp.log10((num_vertices - 2) / 10) / jnp.log10(4))
-    return max(s, 0)  # clip to 0
-
-def unique_triangle_edge_lengths(points, faces, *, metric="chord", radius=None, tol=1e-10):
-    """
-    points: (V,3) float
-    faces:  (F,3) int
-    metric: "chord" for Euclidean edge lengths in R^3,
-            "arc"   for spherical geodesic edge lengths on the sphere
-    radius: if None, inferred from points; used only for "arc"
-    tol:    quantization tolerance for uniqueness (absolute)
-    
-    Returns:
-      uniq_L:   (K,3) float, unique sorted edge triples
-      counts:   (K,)  int, how many faces of each triple
-      order:    indices that sort by counts descending (useful for display)
-    """
-    P = np.asarray(points, dtype=np.float64)
-    F = np.asarray(faces, dtype=np.int64)
-
-    tri = P[F]  # (F,3,3)
-
-    if metric == "chord":
-        e01 = np.linalg.norm(tri[:, 1] - tri[:, 0], axis=1)
-        e12 = np.linalg.norm(tri[:, 2] - tri[:, 1], axis=1)
-        e20 = np.linalg.norm(tri[:, 0] - tri[:, 2], axis=1)
-        L = np.stack([e01, e12, e20], axis=1)
-
-    elif metric == "arc":
-        if radius is None:
-            radius = np.mean(np.linalg.norm(P, axis=1))
-        U = tri / radius
-        # dot products for the 3 edges
-        d01 = np.einsum("ij,ij->i", U[:, 0], U[:, 1]).clip(-1.0, 1.0)
-        d12 = np.einsum("ij,ij->i", U[:, 1], U[:, 2]).clip(-1.0, 1.0)
-        d20 = np.einsum("ij,ij->i", U[:, 2], U[:, 0]).clip(-1.0, 1.0)
-        L = radius * np.stack([np.arccos(d01), np.arccos(d12), np.arccos(d20)], axis=1)
-
-    else:
-        raise ValueError("metric must be 'chord' or 'arc'")
-
-    # sort within each face so (a,b,c) is order-invariant under vertex permutation
-    L.sort(axis=1)
-
-    # quantize to bins of size tol to make uniqueness stable
-    Q = np.rint(L / tol).astype(np.int64)
-
-    uniqQ, counts = np.unique(Q, axis=0, return_counts=True)
-    uniq_L = uniqQ.astype(np.float64) * tol
-
-    order = np.argsort(-counts)
-    return uniq_L, counts, order
-
 def generate_asperities_3d(
     asperity_radius: float,
     particle_radius: float,
@@ -240,7 +221,6 @@ def generate_asperities_3d(
         n_octa = jnp.maximum(jnp.round(jnp.sqrt((target_num_vertices - 2) / 4)), 1)
         pts, tri = meshzoo.octa_sphere(n_octa)
     elif mesh_type == 'ico':
-        # m = trimesh.creation.icosphere(subdivisions=num_trimesh_subdivisions(target_num_vertices), radius=core_radius)
         n_ico = jnp.maximum(jnp.round(jnp.sqrt((target_num_vertices - 2) / 10)), 1)
         pts, tri = meshzoo.icosa_sphere(n_ico)
     else:
@@ -292,7 +272,8 @@ def make_single_particle_3d(
     use_uniform_mesh: bool = False,
     particle_center: Sequence[float] = jnp.zeros(3),
     mass: float = 1.0,
-    mesh_subdivisions: int = 4
+    mesh_subdivisions: int = 4,
+    mesh_type: str = "ico",
     ) -> jd.State:
     """
     asperity_radius: float - radius of the asperities
@@ -314,7 +295,8 @@ def make_single_particle_3d(
         target_num_vertices=target_num_vertices,
         aspect_ratio=aspect_ratio,
         add_core=add_core,
-        use_uniform_mesh=use_uniform_mesh
+        use_uniform_mesh=use_uniform_mesh,
+        mesh_type=mesh_type,
     )
     mesh = generate_mesh(
         asperity_positions=asperity_positions,
@@ -339,39 +321,87 @@ def make_single_particle_3d(
 
     return single_clump_state
 
-def generate_ga_clump_system(particle_radii, sphere_pos, vertex_counts, asperity_radius, **kwargs):
-    dim = sphere_pos.shape[1]
-    radii, index, counts = jnp.unique(particle_radii, return_index=True, return_counts=True)
-    offsets = jnp.concatenate((jnp.zeros(1), jnp.cumsum(counts))).astype(int)
-    merged_state = None
-    pbar = tqdm(particle_radii, total=len(particle_radii), desc='Generating clumps')
-    for i, (radius, j) in enumerate(zip(radii, index)):
-        nv = vertex_counts[j]
+def generate_ga_clump_system(
+    particle_radii: jnp.ndarray,
+    vertex_counts: jnp.ndarray,
+    phi: float,
+    dim: int,
+    asperity_radius: float,
+    *,
+    seed: Optional[float] = None,
+    add_core: bool = True,
+    use_uniform_mesh: bool = False,
+    mass: float = 1.0,
+    aspect_ratio: Union[float, Sequence[float]] = 1.0,
+    quad_segs: int = 10_000,
+    mesh_subdivisions: int = 4,
+    mesh_type: str = "ico",
+) -> Tuple[jd.State, jnp.ndarray]:
+    """
+    Build a `jaxdem.State` containing a system of Geometric Asperity model particles as clumps in either 2D or 3D.
+    """
+
+    # create initial positions
+    if seed is None:
+        seed = np.random.randint(0, 1e9)
+    sphere_pos, box_size = jd.utils.random_sphere_configuration(particle_radii, phi, dim, seed)
+
+    rad_nv = jnp.column_stack((particle_radii, vertex_counts))
+    unique_rad_nv, ids = jnp.unique(rad_nv, axis=0, return_inverse=True)
+    state = None
+
+    # loop over unique particle types
+    for idx, (rad, nv) in tqdm(enumerate(unique_rad_nv), desc='Generating Clumps', total=unique_rad_nv.shape[0]):
+
+        # create a template state for each particle type
+        nv = int(nv)
         if dim == 2:
-            state = make_single_particle_2d(
-                particle_radius=radius,
+            if not isinstance(aspect_ratio, (int, float, np.floating)):
+                raise TypeError(f"For dim=2, expected aspect_ratio to be a float; got {type(aspect_ratio)}")
+            template_state = make_single_particle_2d(
+                particle_radius=rad,
                 num_vertices=nv,
                 asperity_radius=asperity_radius,
-                **kwargs
+                add_core=add_core,
+                use_uniform_mesh=use_uniform_mesh,
+                mass=mass,
+                aspect_ratio=float(aspect_ratio),
+                quad_segs=quad_segs,
             )
         elif dim == 3:
-            state = make_single_particle_3d(
-                particle_radius=radius,
+            aspect_ratio_3d = jnp.asarray(aspect_ratio)
+            if aspect_ratio_3d.shape != (3,):
+                raise TypeError(
+                    f"For dim=3, expected aspect_ratio to be a length-3 sequence; got shape {aspect_ratio_3d.shape}"
+                )
+            template_state = make_single_particle_3d(
+                particle_radius=rad,
                 target_num_vertices=nv,
                 asperity_radius=asperity_radius,
-                **kwargs
+                add_core=add_core,
+                use_uniform_mesh=use_uniform_mesh,
+                mass=mass,
+                aspect_ratio=aspect_ratio_3d,
+                mesh_subdivisions=mesh_subdivisions,
+                mesh_type=mesh_type,
             )
         else:
             raise ValueError(f'dim: {dim} not supported')
-        for j in range(offsets[i], offsets[i + 1]):
-            new_state = jax_copy(state)
-            new_state.pos_c = jnp.ones_like(new_state.pos_c) * sphere_pos[j]
-            if j == 0:
-                merged_state = new_state
-            else:
-                merged_state = jd.State.merge(merged_state, new_state)
-            pbar.update(1)
-    return merged_state
+
+        # duplicate the template state for each instance of the particle type
+        # set the duplicated particle positions to be at the sphere positions
+        duplicated_state = duplicate_clump_template(template_state, sphere_pos[ids == idx])
+
+        # merge with the prior duplicated states
+        if state is None:
+            state = duplicated_state
+        else:
+            state = jd.State.merge(state, duplicated_state)
+    
+    # randomize orientations
+    key = jax.random.PRNGKey(seed)
+    state = jd.utils.randomize_orientations(state, key)
+    return state, box_size
 
 
 if __name__ == "__main__":
@@ -379,20 +409,24 @@ if __name__ == "__main__":
     dim = 2
     
     N = 50
+    asperity_radius = 0.1
     min_nv = 10
     max_nv = 14
-    mu_eff = 0.1
 
     particle_radii = jd.utils.dispersity.get_polydisperse_radii(N)
-    nv = np.ones_like(particle_radii).astype(int)
-    nv[particle_radii == max(particle_radii)] = min_nv
-    asperity_radius = 0.3
+    vertex_counts = np.ones_like(particle_radii).astype(int) * min_nv
+    vertex_counts[particle_radii == max(particle_radii)] = max_nv
 
-
-    sphere_pos, box_size = jd.utils.random_sphere_configuration(particle_radii, phi, dim)
-
-    state = generate_ga_clump_system(particle_radii, sphere_pos, asperity_radius=asperity_radius, vertex_counts=nv)
-    exit()
+    state, box_size = generate_ga_clump_system(
+        particle_radii,
+        vertex_counts,
+        phi,
+        dim,
+        asperity_radius,
+        aspect_ratio=5.0,
+        use_uniform_mesh=True,
+        add_core=False
+    )
 
     e_int = 1.0
     dt = 1e-2
@@ -417,12 +451,17 @@ if __name__ == "__main__":
         ),
     )
 
+
+
+    # exit()
+
+
+
     state, system, phi, pe = jd.utils.bisection_jam(state, system, n_minimization_steps=1_000_00, n_jamming_steps=1_000_000, packing_fraction_increment=1e-2)
 
     jd.utils.h5.save(state, 'jammed_state.h5')
     jd.utils.h5.save(system, 'jammed_system.h5')
 
-    import numpy as np
     import subprocess
     from pathlib import Path
     import h5py
@@ -440,12 +479,6 @@ if __name__ == "__main__":
         "1000",
     ], check=True)
 
-
-    # make the particles of different sizes have different numbers of vertices in the system creator
-
-    # give the particles random orientations
-
-    # make it faster
 
     # make script to create any initial system of ga particles in 2d/3d
     # make script to jam any initial system of ga particles in 2d/3d
