@@ -12,12 +12,6 @@ The "effective friction coefficient" is reported as:
 
 where F is the total contact force on the tracer clump, decomposed into normal and
 tangential components at the current surface point.
-
-Important note:
-  This measures *geometric friction* from roughness (asperities) using the normal-only
-  spring force law currently implemented in JaxDEM (`forces/spring.py`). If you want
-  Coulomb/Mindlin friction, we can add a tangential contact law, but that requires
-  contact-history state (tangential spring) that JaxDEM doesn't currently store.
 """
 
 from __future__ import annotations

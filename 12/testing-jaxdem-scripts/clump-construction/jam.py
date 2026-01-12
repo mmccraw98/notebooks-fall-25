@@ -479,6 +479,7 @@ if __name__ == "__main__":
         "1000",
     ], check=True)
 
+    # remove the jd references from the sphere randomizer
 
     # make script to create any initial system of ga particles in 2d/3d
     # make script to jam any initial system of ga particles in 2d/3d
